@@ -1,0 +1,68 @@
+CREATE DATABASE IF NOT EXISTS focus_fly;
+USE focus_fly;
+
+CREATE TABLE IF NOT EXISTS `user` (
+  `id` VARCHAR(32) PRIMARY KEY,
+  `name` VARCHAR(64) NOT NULL DEFAULT '',
+  `avatar` VARCHAR(256) NOT NULL DEFAULT '',
+  `vip` TINYINT(1) NOT NULL DEFAULT 0,
+  `region` VARCHAR(8) NOT NULL DEFAULT ''
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `flight` (
+  `id` VARCHAR(32) PRIMARY KEY,
+  `captainId` VARCHAR(32) NOT NULL,
+  `mode` TINYINT NOT NULL DEFAULT 0,
+  `flyMode` TINYINT NOT NULL DEFAULT 0,
+  `status` TINYINT NOT NULL DEFAULT 0,
+  `from` INT NOT NULL DEFAULT 0,
+  `to` INT NOT NULL DEFAULT 0,
+  `start` INT NOT NULL DEFAULT 0,
+  `end` INT NOT NULL DEFAULT 0,
+  `createdAt` INT NOT NULL DEFAULT 0,
+  `scheduledIds` TEXT,
+  `minutes` INT NOT NULL DEFAULT 0,
+  `crashByUserId` VARCHAR(32) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `flight_passenger` (
+  `id` VARCHAR(32) PRIMARY KEY,
+  `flightId` VARCHAR(32) NOT NULL,
+  `userId` VARCHAR(32) NOT NULL,
+  `role` TINYINT NOT NULL DEFAULT 1,
+  `status` TINYINT NOT NULL DEFAULT 0,
+  `joinAt` INT NOT NULL DEFAULT 0,
+  `quitAt` INT DEFAULT NULL,
+  `minutes` INT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `flight_passenger_status_log` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `flightId` VARCHAR(32) NOT NULL,
+  `userId` VARCHAR(32) NOT NULL,
+  `status` TINYINT NOT NULL,
+  `timestamp` INT NOT NULL,
+  INDEX `idx_flight_user` (`flightId`, `userId`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `flight_stats` (
+  `id` VARCHAR(32) PRIMARY KEY,
+  `userId` VARCHAR(32) NOT NULL UNIQUE,
+  `totalMinutes` INT NOT NULL DEFAULT 0,
+  `totalArrivals` INT NOT NULL DEFAULT 0,
+  `totalCrashes` INT NOT NULL DEFAULT 0,
+  `streakDays` INT NOT NULL DEFAULT 0,
+  `lastFlightDay` INT NOT NULL DEFAULT 0,
+  `distribution` TEXT,
+  `friendRanks` TEXT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `friendship` (
+  `id` VARCHAR(32) PRIMARY KEY,
+  `userIdA` VARCHAR(32) NOT NULL,
+  `userIdB` VARCHAR(32) NOT NULL,
+  `flightId` VARCHAR(32) NOT NULL,
+  `createdAt` INT NOT NULL DEFAULT 0,
+  INDEX `idx_userA` (`userIdA`),
+  INDEX `idx_userB` (`userIdB`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
