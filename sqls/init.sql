@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS `flight` (
   `to` INT NOT NULL DEFAULT 0,
   `start` INT NOT NULL DEFAULT 0,
   `end` INT NOT NULL DEFAULT 0,
+  `takeoffAt` INT NOT NULL DEFAULT 0,
   `createdAt` INT NOT NULL DEFAULT 0,
   `scheduledIds` TEXT,
   `minutes` INT NOT NULL DEFAULT 0,

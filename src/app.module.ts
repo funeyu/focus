@@ -1,7 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule } from './config/config.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
+import { RedisModule } from './common/redis.module';
+import { UserModule } from './modules/user/user.module';
+import { FlightModule } from './modules/flight/flight.module';
+import { TokenMiddleware } from './common/token.middleware';
 
 @Module({
   imports: [
@@ -17,6 +21,13 @@ import { ScheduleModule } from '@nestjs/schedule';
       synchronize: true,
     }),
     ScheduleModule.forRoot(),
+    RedisModule,
+    UserModule,
+    FlightModule,
   ],
 })
-export class AppModule {}
+export class AppModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(TokenMiddleware).forRoutes('*');
+  }
+}

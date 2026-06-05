@@ -10,7 +10,7 @@ import { Inject } from '@nestjs/common';
 import Redis from 'ioredis';
 import { FlightService } from './flight.service';
 import { FlightStatsService } from './flight-stats.service';
-import { FlyMode, FlightStatus, UserFlyStatus } from '../../models/enums';
+import { FlyMode, FlightStatus, UserFlyStatus, SeatFocusStatus } from '../../models/enums';
 import { TokenUtil } from '../../common/token.util';
 import { REDIS_CLIENT } from '../../common/redis.module';
 import { FriendshipService } from '../user/friendship.service';
@@ -20,6 +20,7 @@ interface FlightSeat {
   flightId: string;
   userId: string;
   status: number;
+  focusStatus: number;
   seatNum: string;
   role: number;
   isActive: boolean;
@@ -30,7 +31,8 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  private userRooms: Map<string, Set<string>> = new Map();
+  private roomClients: Map<string, Set<WebSocket>> = new Map();
+  private userClients: Map<string, Set<WebSocket>> = new Map();
   private clientUserMap: Map<WebSocket, string> = new Map();
 
   constructor(
@@ -56,7 +58,7 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!token || !TokenUtil.validate(token, Math.floor(Date.now() / 1000))) {
         client.close(4001, 'invalid token');
       }
-    } catch {
+    } catch (err) {
       client.close(4001, 'invalid token');
     }
   }
@@ -64,47 +66,106 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleDisconnect(client: WebSocket) {
     const userId = this.clientUserMap.get(client);
     this.clientUserMap.delete(client);
-    if (userId) {
-      this.userRooms.delete(userId);
-      this.broadcastFriendStatus(userId, 'offline');
+
+    if (!userId) return;
+
+    const clients = this.userClients.get(userId);
+    if (clients) {
+      clients.delete(client);
+      if (clients.size === 0) {
+        this.userClients.delete(userId);
+        this.broadcastFriendStatus(userId, 'offline');
+      }
+    }
+
+    const room = (client as any).room as string | undefined;
+    if (room) {
+      const roomSet = this.roomClients.get(room);
+      if (roomSet) {
+        roomSet.delete(client);
+        if (roomSet.size === 0) {
+          this.roomClients.delete(room);
+        }
+      }
     }
   }
 
   @SubscribeMessage('joinFlight')
   async onJoinFlight(client: WebSocket, data: { flightId: string; userId: string }) {
+    console.log('[WS] joinFlight', data);
     const room = `flight:${data.flightId}`;
     (client as any).room = room;
     this.clientUserMap.set(client, data.userId);
-    if (!this.userRooms.has(data.userId)) {
-      this.userRooms.set(data.userId, new Set());
+
+    if (!this.roomClients.has(room)) {
+      this.roomClients.set(room, new Set());
     }
-    this.userRooms.get(data.userId).add(room);
+    this.roomClients.get(room).add(client);
+
+    if (!this.userClients.has(data.userId)) {
+      this.userClients.set(data.userId, new Set());
+    }
+    this.userClients.get(data.userId).add(client);
+
     this.broadcastFriendStatus(data.userId, 'flying');
   }
 
   @SubscribeMessage('enterCabin')
   async onEnterCabin(client: WebSocket, data: { flightId: string; userId: string }) {
+    console.log('[WS] enterCabin', data);
+
+    // Leave previous room if any
+    const prevRoom = (client as any).room as string | undefined;
+    if (prevRoom) {
+      const prevSet = this.roomClients.get(prevRoom);
+      if (prevSet) {
+        prevSet.delete(client);
+        if (prevSet.size === 0) {
+          this.roomClients.delete(prevRoom);
+        }
+      }
+    }
+
+    const room = `flight:${data.flightId}`;
+    (client as any).room = room;
+    this.clientUserMap.set(client, data.userId);
+
+    if (!this.roomClients.has(room)) {
+      this.roomClients.set(room, new Set());
+    }
+    this.roomClients.get(room).add(client);
+
+    if (!this.userClients.has(data.userId)) {
+      this.userClients.set(data.userId, new Set());
+    }
+    this.userClients.get(data.userId).add(client);
+
     const seat = await this.flightService.findUserSeatInRedis(data.flightId, data.userId);
-    if (!seat) return;
-    seat.isActive = true;
-    await this.flightService.setSeatInRedis(data.flightId, seat);
-    this.broadcastSeatUpdate(data.flightId);
+    if (seat) {
+      seat.isActive = true;
+      seat.focusStatus = SeatFocusStatus.FOCUSED;
+      await this.flightService.setSeatInRedis(data.flightId, seat);
+    }
+    await this.broadcastSeatUpdate(data.flightId);
+    this.broadcastFriendStatus(data.userId, 'flying');
   }
 
   @SubscribeMessage('leaveCabin')
   async onLeaveCabin(client: WebSocket, data: { flightId: string; userId: string }) {
+    console.log('[WS] leaveCabin', data);
     const seat = await this.flightService.findUserSeatInRedis(data.flightId, data.userId);
     if (!seat) return;
-    seat.isActive = false;
+    seat.focusStatus = SeatFocusStatus.DISTRACTED;
     await this.flightService.setSeatInRedis(data.flightId, seat);
-    this.broadcastSeatUpdate(data.flightId);
+    await this.broadcastSeatUpdate(data.flightId);
   }
 
   @SubscribeMessage('pick.seat')
   async onPickSeat(client: WebSocket, data: { flightId: string; userId: string; seatNum: string; userStatus: number }) {
+    console.log('[WS] pick.seat', data);
     try {
       await this.flightService.join(data.flightId, data.userId, data.seatNum);
-      this.broadcastSeatUpdate(data.flightId);
+      await this.broadcastSeatUpdate(data.flightId);
       this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'ok');
     } catch (err) {
       this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'error');
@@ -113,58 +174,70 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('leaveSeat')
   async onLeaveSeat(client: WebSocket, data: { flightId: string; userId: string }) {
-    await this.flightService.leaveSeat(data.flightId, data.userId);
+    console.log('[WS] leaveSeat', data);
+    const { flyMode } = await this.flightService.leaveSeat(data.flightId, data.userId);
+    const flightStatus = parseInt(await this.redis.hget(`flight:${data.flightId}`, 'status'));
 
-    const flightData = await this.redis.hgetall(`flight:${data.flightId}`);
-    const flyMode = parseInt(flightData.flyMode, 10);
-
-    if (this.shouldCrash(flyMode, 'leave', Math.random())) {
+    if (flightStatus === FlightStatus.FLYING && this.shouldCrash(flyMode, 'leave', Math.random())) {
       await this.handleCrash(data.flightId, data.userId);
     } else {
-      this.broadcastSeatUpdate(data.flightId);
+      await this.broadcastSeatUpdate(data.flightId);
       this.broadcastFriendStatus(data.userId, 'afk');
     }
   }
 
   @SubscribeMessage('backSeat')
   async onBackSeat(client: WebSocket, data: { flightId: string; userId: string }) {
+    console.log('[WS] backSeat', data);
     await this.flightService.backSeat(data.flightId, data.userId);
-    this.broadcastSeatUpdate(data.flightId);
+    await this.broadcastSeatUpdate(data.flightId);
     this.broadcastFriendStatus(data.userId, 'flying');
   }
 
   @SubscribeMessage('giveUpFlight')
   async onGiveUpFlight(client: WebSocket, data: { flightId: string; userId: string }) {
-    await this.flightService.giveUp(data.flightId, data.userId);
+    console.log('[WS] giveUpFlight', data);
+    const { flyMode } = await this.flightService.giveUp(data.flightId, data.userId);
+    const flightStatus = parseInt(await this.redis.hget(`flight:${data.flightId}`, 'status'));
+    console.log('giveUpFlight flyMode', flyMode, 'flightStatus', flightStatus);
+    if (flightStatus !== FlightStatus.FLYING) {
+      return;
+    }
 
-    const flightData = await this.redis.hgetall(`flight:${data.flightId}`);
-    const flyMode = parseInt(flightData.flyMode, 10);
-
-    if (this.shouldCrash(flyMode, 'giveup', Math.random())) {
+    const activeSeats = await this.flightService.getActiveSeatCount(data.flightId);
+    console.log('activeSeats', activeSeats);
+    if (activeSeats === 0) {
+      await this.handleCrash(data.flightId, data.userId);
+    } else if (this.shouldCrash(flyMode, 'giveup', Math.random())) {
       await this.handleCrash(data.flightId, data.userId);
     } else {
-      this.broadcastSeatUpdate(data.flightId);
+      await this.broadcastSeatUpdate(data.flightId);
       this.broadcastFriendStatus(data.userId, 'offline');
     }
   }
 
   private async handleCrash(flightId: string, crashByUserId: string) {
-    await this.redis.hset(`flight:${flightId}`, 'status', String(FlightStatus.CRASH));
-    await this.flightService.updateFlightStatus(flightId, FlightStatus.CRASH, crashByUserId);
-
-    const flight = await this.flightService.findFlightById(flightId);
-    if (flight) {
-      await this.statsService.settleFlight(flightId, flight.arrivalAt, FlightStatus.CRASH);
-    }
-
-    this.broadcastToRoom(`flight:${flightId}`, 'crashAlert', { crashByUserId });
-
-    const passengers = await this.flightService.getFlightPassengers(flightId);
-    for (const p of passengers) {
-      if (p.status !== UserFlyStatus.GIVEUP) {
-        this.broadcastFriendStatus(p.userId, 'offline');
+    console.log('crashByUserId', crashByUserId);
+    await Promise.all([
+      this.redis.hset(`flight:${flightId}`, 'status', String(FlightStatus.CRASH)),
+      this.flightService.updateFlightStatus(flightId, FlightStatus.CRASH, crashByUserId),
+      this.flightService.findFlightById(flightId),
+    ]).then(async ([, , flight]) => {
+      if (flight) {
+        const [passengers, _, crashByUser] = await Promise.all([
+          this.flightService.getFlightPassengers(flightId),
+          this.statsService.settleFlight(flightId, flight.arrivalAt, FlightStatus.CRASH),
+          this.userService.findByIds([crashByUserId]),
+        ]);
+        const user = crashByUser[0];
+        this.broadcastToRoom(`flight:${flightId}`, 'crash', user ? { id: user.id, avatar: user.avatar, name: user.name, vip: user.vip } : null);
+        for (const p of passengers) {
+          if (p.status !== UserFlyStatus.GIVEUP) {
+            this.broadcastFriendStatus(p.userId, 'offline');
+          }
+        }
       }
-    }
+    });
   }
 
   async broadcastSeatUpdate(flightId: string) {
@@ -182,6 +255,8 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
           num: seat.seatNum,
           userInfo: user ? { id: user.id, avatar: user.avatar, name: user.name, vip: user.vip } : null,
           userStatus: seat.status,
+          focusStatus: seat.focusStatus ?? SeatFocusStatus.NOT_STARTED
+          ,
           isActive: seat.isActive,
         });
       }
@@ -193,11 +268,14 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   broadcastToRoom(room: string, event: string, data: any) {
     const message = JSON.stringify({ event, data });
-    this.server.clients.forEach(client => {
-      if ((client as any).room === room && client.readyState === 1) {
+    const clients = this.roomClients.get(room);
+    console.log(`[WS] broadcastToRoom room=${room} event=${event} clientCount=${clients?.size ?? 0}`, message);
+    if (!clients) return;
+    for (const client of clients) {
+      if (client.readyState === 1) {
         client.send(message);
       }
-    });
+    }
   }
 
   private async broadcastFriendStatus(userId: string, status: string) {
@@ -213,8 +291,10 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     for (const friendId of friendIds) {
-      for (const client of this.server.clients) {
-        if (this.clientUserMap.get(client) === friendId && client.readyState === 1) {
+      const clients = this.userClients.get(friendId);
+      if (!clients) continue;
+      for (const client of clients) {
+        if (client.readyState === 1) {
           client.send(message);
         }
       }

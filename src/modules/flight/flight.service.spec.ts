@@ -9,10 +9,10 @@ import { REDIS_CLIENT } from '../../common/redis.module';
 
 describe('FlightService', () => {
   let service: FlightService;
-  const flightRepo = { save: jest.fn(), findOne: jest.fn(), find: jest.fn(), update: jest.fn(), findByIds: jest.fn(), create: jest.fn() };
-  const passengerRepo = { save: jest.fn(), findOne: jest.fn(), find: jest.fn(), create: jest.fn() };
+  const flightRepo = { save: jest.fn(), findOne: jest.fn(), find: jest.fn(), update: jest.fn(), findByIds: jest.fn(), create: jest.fn(), delete: jest.fn() };
+  const passengerRepo = { save: jest.fn(), findOne: jest.fn(), find: jest.fn(), create: jest.fn(), delete: jest.fn() };
   const statusLogRepo = { save: jest.fn(), find: jest.fn(), create: jest.fn() };
-  const redis = { hset: jest.fn(), hgetall: jest.fn(), hdel: jest.fn(), hvals: jest.fn(), del: jest.fn(), zadd: jest.fn(), zrem: jest.fn(), zrangebyscore: jest.fn() };
+  const redis = { hset: jest.fn(), hget: jest.fn(), hgetall: jest.fn(), hdel: jest.fn(), hvals: jest.fn(), del: jest.fn(), zadd: jest.fn(), zrem: jest.fn(), zrangebyscore: jest.fn() };
   const friendshipService = { createForFlight: jest.fn() };
   const userService = { findByIds: jest.fn().mockResolvedValue([]) };
 
@@ -85,14 +85,36 @@ describe('FlightService', () => {
     it('should update passenger status to GIVEUP', async () => {
       statusLogRepo.create.mockReturnValue({ flightId: 'flt_1', userId: 'user1', status: UserFlyStatus.GIVEUP });
       statusLogRepo.save.mockResolvedValue({});
-      passengerRepo.findOne.mockResolvedValue({ flightId: 'flt_1', userId: 'user1', status: UserFlyStatus.FOCUSING });
+      passengerRepo.findOne.mockResolvedValue({ flightId: 'flt_1', userId: 'user1', status: UserFlyStatus.FOCUSING, seatNum: 'A01' });
       passengerRepo.save.mockResolvedValue({});
+      redis.hget.mockResolvedValue(String(FlyMode.SAFE));
 
-      await service.giveUp('flt_1', 'user1');
+      const result = await service.giveUp('flt_1', 'user1');
 
       expect(passengerRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: UserFlyStatus.GIVEUP }),
       );
+      expect(result.flyMode).toBe(FlyMode.SAFE);
+    });
+  });
+
+  describe('deleteFlight', () => {
+    it('should allow captain to delete', async () => {
+      flightRepo.findOne.mockResolvedValue({ id: 'flt_1', captainId: 'user1', status: FlightStatus.PENDING });
+      flightRepo.delete.mockResolvedValue({});
+      passengerRepo.delete.mockResolvedValue({});
+      redis.del.mockResolvedValue(1);
+      redis.zrem.mockResolvedValue(1);
+
+      await service.deleteFlight('flt_1', 'user1');
+
+      expect(flightRepo.delete).toHaveBeenCalledWith({ id: 'flt_1' });
+    });
+
+    it('should reject non-captain deleting flight', async () => {
+      flightRepo.findOne.mockResolvedValue({ id: 'flt_1', captainId: 'user1', status: FlightStatus.PENDING });
+
+      await expect(service.deleteFlight('flt_1', 'user2')).rejects.toThrow('only captain can delete flight');
     });
   });
 

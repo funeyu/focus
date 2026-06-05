@@ -3,7 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import Redis from 'ioredis';
 import { Flight, FlightPassenger, FlightPassengerStatusLog } from '../../models/entities';
-import { FlightMode, FlyMode, FlightStatus, Role, UserFlyStatus } from '../../models/enums';
+import { FlightMode, FlyMode, FlightStatus, Role, UserFlyStatus, SeatFocusStatus } from '../../models/enums';
+import { FlightDto, FlightSeatPairDto, FlightSeatDto } from '../../models/dtos';
 import { IdUtil } from '../../common/id.util';
 import { FriendshipService } from '../user/friendship.service';
 import { UserService } from '../user/user.service';
@@ -75,6 +76,7 @@ export class FlightService {
         userId: data.captainId,
         seatNum: data.seatNum,
         status: UserFlyStatus.FOCUSING,
+        focusStatus: SeatFocusStatus.NOT_STARTED,
         role: Role.CAPTAIN,
         isActive: true,
       });
@@ -107,6 +109,7 @@ export class FlightService {
       userId,
       seatNum,
       status: UserFlyStatus.FOCUSING,
+      focusStatus: SeatFocusStatus.NOT_STARTED,
       role,
       isActive: true,
     });
@@ -120,7 +123,7 @@ export class FlightService {
     return passenger;
   }
 
-  async giveUp(flightId: string, userId: string): Promise<void> {
+  async giveUp(flightId: string, userId: string): Promise<{ flyMode: FlyMode }> {
     await this.writeStatusLog(flightId, userId, UserFlyStatus.GIVEUP);
     const passenger = await this.passengerRepo.findOne({ where: { flightId, userId } });
     if (passenger) {
@@ -131,16 +134,19 @@ export class FlightService {
         await this.removeSeatFromRedis(flightId, passenger.seatNum);
       }
     }
+    const flightData = await this.redis.hget(`flight:${flightId}`, 'flyMode');
+    return { flyMode: parseInt(flightData, 10) || FlyMode.SAFE };
   }
 
-  async leaveSeat(flightId: string, userId: string): Promise<void> {
+  async leaveSeat(flightId: string, userId: string): Promise<{ flyMode: FlyMode }> {
     await this.writeStatusLog(flightId, userId, UserFlyStatus.LEAVE);
     const seat = await this.findUserSeatInRedis(flightId, userId);
     if (seat) {
-      seat.isActive = false;
-      seat.status = UserFlyStatus.LEAVE;
+      seat.focusStatus = SeatFocusStatus.DISTRACTED;
       await this.setSeatInRedis(flightId, seat);
     }
+    const flightData = await this.redis.hget(`flight:${flightId}`, 'flyMode');
+    return { flyMode: parseInt(flightData, 10) || FlyMode.SAFE };
   }
 
   async backSeat(flightId: string, userId: string): Promise<void> {
@@ -148,13 +154,12 @@ export class FlightService {
     await this.writeStatusLog(flightId, userId, UserFlyStatus.FOCUSING);
     const seat = await this.findUserSeatInRedis(flightId, userId);
     if (seat) {
-      seat.isActive = true;
-      seat.status = UserFlyStatus.FOCUSING;
+      seat.focusStatus = SeatFocusStatus.FOCUSED;
       await this.setSeatInRedis(flightId, seat);
     }
   }
 
-  async getFlightDetail(flightId: string): Promise<any> {
+  async getFlightDetail(flightId: string): Promise<(FlightDto & { passengers: any[] }) | null> {
     const flight = await this.flightRepo.findOne({ where: { id: flightId } });
     if (!flight) return null;
     const dto = await this.toFlightDto(flight);
@@ -162,26 +167,37 @@ export class FlightService {
     const passengerUserIds = passengers.map(p => p.userId);
     const users = await this.userService.findByIds(passengerUserIds);
     const userMap = new Map(users.map(u => [u.id, u]));
-    dto.passengers = passengers.map(p => ({
-      ...p,
-      user: userMap.get(p.userId) || null,
-    }));
-    return dto;
+    return {
+      ...dto,
+      passengers: passengers.map(p => ({
+        ...p,
+        user: userMap.get(p.userId) || null,
+      })),
+    };
   }
 
-  async getMyFlights(userId: string): Promise<any[]> {
+  async getMyFlights(userId: string): Promise<FlightDto[]> {
     const passengers = await this.passengerRepo.find({ where: { userId } });
     const flightIds = passengers.map(p => p.flightId);
     if (flightIds.length === 0) return [];
     const flights = await this.flightRepo.findByIds(flightIds);
     const now = Math.floor(Date.now() / 1000);
-    const active = flights.filter(f => f.takeoffAt > now && f.status !== FlightStatus.CRASH);
+    const oneWeekAgo = now - 7 * 24 * 3600;
+    const recent = flights.filter(f => f.createdAt >= oneWeekAgo);
+    const active = recent.filter(f => f.arrivalAt > now && f.status !== FlightStatus.CRASH);
     active.sort((a, b) => {
       if (a.status === FlightStatus.FLYING && b.status !== FlightStatus.FLYING) return -1;
       if (a.status !== FlightStatus.FLYING && b.status === FlightStatus.FLYING) return 1;
       return a.takeoffAt - b.takeoffAt;
     });
-    return Promise.all(active.map(f => this.toFlightDto(f)));
+    const dtos = await Promise.all(active.map(f => this.toFlightDto(f)));
+    for (let i = 0; i < active.length; i++) {
+      if (active[i].status === FlightStatus.FLYING) {
+        const seat = await this.findUserSeatInRedis(active[i].id, userId);
+        dtos[i].focusStatus = seat?.focusStatus ?? SeatFocusStatus.FOCUSED;
+      }
+    }
+    return dtos;
   }
 
   async getInvites(userId: string): Promise<any[]> {
@@ -242,8 +258,7 @@ export class FlightService {
     const flight = await this.flightRepo.findOne({ where: { id: flightId } });
     if (!flight) throw new BadRequestException('flight not found');
 
-    const passenger = await this.passengerRepo.findOne({ where: { flightId, userId } });
-    if (!passenger) throw new BadRequestException('not a passenger of this flight');
+    if (flight.captainId !== userId) throw new BadRequestException('only captain can delete flight');
     if (flight.status === FlightStatus.FLYING) throw new BadRequestException('cannot delete a flying flight');
 
     await this.passengerRepo.delete({ flightId });
@@ -309,15 +324,37 @@ export class FlightService {
     await this.redis.zrem('group:flights', flightId);
   }
 
-  async setSeatInRedis(flightId: string, seat: { userId: string; seatNum: string; status: number; role: number; isActive: boolean }): Promise<void> {
+  async setSeatInRedis(flightId: string, seat: { userId: string; seatNum: string; status: number; focusStatus: number; role: number; isActive: boolean }): Promise<void> {
     await this.redis.hset(`flight:${flightId}:seats`, seat.seatNum, JSON.stringify(seat));
+    await this.persistSeatsToDb(flightId, { num: seat.seatNum, userId: seat.userId, userStatus: seat.status });
   }
 
   async removeSeatFromRedis(flightId: string, seatNum: string): Promise<void> {
     await this.redis.hdel(`flight:${flightId}:seats`, seatNum);
+    const flight = await this.flightRepo.findOne({ where: { id: flightId } });
+    if (!flight) return;
+    const seats = (flight.seats || []).filter(s => s.num !== seatNum);
+    await this.flightRepo.update({ id: flightId }, { seats });
   }
 
-  async findUserSeatInRedis(flightId: string, userId: string): Promise<{ userId: string; seatNum: string; status: number; role: number; isActive: boolean } | null> {
+  private async persistSeatsToDb(flightId: string, seatData: { num: string; userId: string; userStatus: number } | null): Promise<void> {
+    const flight = await this.flightRepo.findOne({ where: { id: flightId } });
+    if (!flight) return;
+    const seats = flight.seats ? [...flight.seats] : [];
+    if (seatData) {
+      const idx = seats.findIndex(s => s.num === seatData.num);
+      if (idx >= 0) {
+        seats[idx] = seatData;
+      } else {
+        seats.push(seatData);
+      }
+    } else {
+      // remove by seatNum — not used currently
+    }
+    await this.flightRepo.update({ id: flightId }, { seats });
+  }
+
+  async findUserSeatInRedis(flightId: string, userId: string): Promise<{ userId: string; seatNum: string; status: number; focusStatus: number; role: number; isActive: boolean } | null> {
     const entries = await this.redis.hgetall(`flight:${flightId}:seats`);
     for (const val of Object.values(entries)) {
       const seat = JSON.parse(val);
@@ -328,14 +365,35 @@ export class FlightService {
 
   async getActiveSeatCount(flightId: string): Promise<number> {
     const vals = await this.redis.hvals(`flight:${flightId}:seats`);
-    return vals.filter(v => JSON.parse(v).isActive === true).length;
+    return vals.length;
   }
 
-  async toFlightDto(flight: Flight): Promise<any> {
+  async getSeatsFromRedis(flightId: string): Promise<FlightSeatDto[]> {
+    const entries = await this.redis.hgetall(`flight:${flightId}:seats`);
+    if (Object.keys(entries).length === 0) return [];
+    const rawSeats = Object.values(entries).map(v => JSON.parse(v));
+    const userIds = [...new Set(rawSeats.map((s: any) => s.userId))];
+    const users = await this.userService.findByIds(userIds);
+    const userMap = new Map(users.map(u => [u.id, u]));
+    return rawSeats.map((s: any) => {
+      const user = userMap.get(s.userId);
+      return {
+        num: s.seatNum,
+        userInfo: user ? { id: user.id, name: user.name, avatar: user.avatar, vip: user.vip } : null,
+        userStatus: s.status,
+        focusStatus: s.focusStatus,
+        isActive: s.isActive,
+      };
+    });
+  }
+
+  async toFlightDto(flight: Flight): Promise<FlightDto> {
     const scheduledIdList = flight.scheduledIds
       ? flight.scheduledIds.split(',').filter(Boolean)
       : [];
-    const allIds = [...new Set([flight.captainId, ...scheduledIdList])];
+    const seatList = flight.seats || [];
+    const seatUserIds = seatList.map(s => s.userId);
+    const allIds = [...new Set([flight.captainId, ...scheduledIdList, ...seatUserIds])];
     const users = await this.userService.findByIds(allIds);
     const userMap = new Map(users.map(u => [u.id, u]));
 
@@ -344,7 +402,18 @@ export class FlightService {
       .map(id => userMap.get(id))
       .filter(Boolean);
 
-    const { scheduledIds, ...rest } = flight;
-    return { ...rest, captain: captain, scheduledUsers };
+    const seats: FlightSeatDto[] = seatList.map(seatInfo => {
+      const user = userMap.get(seatInfo.userId);
+      return {
+        num: seatInfo.num,
+        userInfo: user ? { id: user.id, name: user.name, avatar: user.avatar, vip: user.vip } : null,
+        userStatus: seatInfo.userStatus,
+        focusStatus: SeatFocusStatus.FOCUSED,
+        isActive: true,
+      };
+    });
+
+    const { scheduledIds, seats: _seats, ...rest } = flight;
+    return { ...rest, captain, scheduledUsers, seats };
   }
 }

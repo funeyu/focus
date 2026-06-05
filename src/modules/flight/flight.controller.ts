@@ -69,7 +69,6 @@ export class FlightController {
 
   @Get('my/:userId')
   async myFlights(@Param('userId') userId: string) {
-    console.log('userId', userId);
     const flights = await this.flightService.getMyFlights(userId);
     return ApiUtil.ok(flights);
   }

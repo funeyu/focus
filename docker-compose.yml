@@ -1,13 +1,44 @@
-version: '3.8'
 services:
   mysql:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: focus_fly
+    volumes:
+      - ./sqls/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # focus-server:
+  #   build: .
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     DB_HOST: mysql
+  #     DB_PORT: 3306
+  #     DB_USERNAME: root
+  #     DB_PASSWORD: root
+  #     DB_DATABASE: focus_fly
+  #     REDIS_HOST: redis
+  #     REDIS_PORT: 6379
+  #     PORT: 3000
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy

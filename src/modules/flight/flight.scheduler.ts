@@ -1,13 +1,13 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import Redis from 'ioredis';
-import { FlightStatus, UserFlyStatus } from '../../models/enums';
+import { FlightStatus, SeatFocusStatus } from '../../models/enums';
 import { FlightService } from './flight.service';
 import { FlightStatsService } from './flight-stats.service';
 import { FlightGateway } from './flight.gateway';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Flight, FlightPassenger } from '../../models/entities';
+import { Flight } from '../../models/entities';
 import { REDIS_CLIENT } from '../../common/redis.module';
 
 @Injectable()
@@ -17,8 +17,6 @@ export class FlightScheduler {
     private readonly redis: Redis,
     @InjectRepository(Flight)
     private readonly flightRepo: Repository<Flight>,
-    @InjectRepository(FlightPassenger)
-    private readonly passengerRepo: Repository<FlightPassenger>,
     private readonly flightService: FlightService,
     private readonly statsService: FlightStatsService,
     private readonly gateway: FlightGateway,
@@ -33,26 +31,21 @@ export class FlightScheduler {
     for (const flightId of readyIds) {
       const key = `flight:${flightId}`;
       const data = await this.redis.hgetall(key);
-      console.log('redis.data', data);
       if (!data.status || parseInt(data.status) !== FlightStatus.PENDING) continue;
 
-      const passengers = await this.passengerRepo.find({ where: { flightId } });
-      const seatedPassengers = passengers.filter(p => p.status !== UserFlyStatus.GIVEUP);
-
-      if (seatedPassengers.length === 0) continue;
-
-      // Check at least 1 active seat in Redis
       const seatVals = await this.redis.hvals(`flight:${flightId}:seats`);
-      const hasActiveSeat = seatVals.some(v => {
-        try { return JSON.parse(v).isActive === true; } catch { return false; }
-      });
-      if (!hasActiveSeat) continue;
+      console.log('Checking flight', flightId, 'seats:', seatVals);
+      const seatedSeats = seatVals.map(v => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
+      if (seatedSeats.length === 0) continue;
+
+      const hasFocusedSeat = seatedSeats.some(s => s.focusStatus === SeatFocusStatus.FOCUSED);
+      if (!hasFocusedSeat) continue;
 
       await this.redis.hset(key, 'status', String(FlightStatus.FLYING));
       await this.flightRepo.update({ id: flightId }, { status: FlightStatus.FLYING });
 
-      const seatedUserIds = seatedPassengers.map(p => p.userId);
-      console.log('seatedUserIds', seatedUserIds);
+      const seatedUserIds = seatedSeats.map(s => s.userId);
+      console.log('Flight taking off', flightId, 'seatedUserIds:', seatedUserIds);
       this.gateway.broadcastToRoom(`flight:${flightId}`, 'takingOff', { flightId, seatedUserIds });
     }
 
@@ -60,6 +53,7 @@ export class FlightScheduler {
     const allFlightKeys = await this.redis.keys('flight:*');
     for (const key of allFlightKeys) {
       const data = await this.redis.hgetall(key);
+      console.log('Checking flight for arrival', key, 'data:', data);
       if (!data.status || parseInt(data.status) !== FlightStatus.FLYING) continue;
 
       if (parseInt(data.arrivalAt) <= now) {
