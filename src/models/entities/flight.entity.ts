@@ -43,5 +43,5 @@ export class Flight {
   crashByUserId: string;
 
   @Column({ type: 'json', nullable: true })
-  seats: { num: string; userId: string; userStatus: number }[] | null;
+  seats: { num: string; userId: string; focusScene: number }[] | null;
 }

@@ -40,9 +40,6 @@ let UserService = class UserService {
             return [];
         return this.userRepo.findByIds(ids);
     }
-    async updateDeviceToken(userId, token) {
-        await this.userRepo.update({ id: userId }, { deviceToken: token });
-    }
 };
 exports.UserService = UserService;
 exports.UserService = UserService = __decorate([

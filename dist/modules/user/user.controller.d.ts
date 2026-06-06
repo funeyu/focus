@@ -12,13 +12,6 @@ export declare class UserController {
         code: number;
         data: any;
     }>;
-    registerDeviceToken(body: {
-        userId: string;
-        token: string;
-    }): Promise<{
-        code: number;
-        data: any;
-    }>;
     getFriends(userId: string): Promise<{
         code: number;
         data: any;

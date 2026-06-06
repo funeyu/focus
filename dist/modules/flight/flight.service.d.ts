@@ -13,6 +13,7 @@ export declare class FlightService {
     private readonly friendshipService;
     private readonly userService;
     constructor(flightRepo: Repository<Flight>, passengerRepo: Repository<FlightPassenger>, statusLogRepo: Repository<FlightPassengerStatusLog>, redis: Redis, friendshipService: FriendshipService, userService: UserService);
+    cacheKey(flightId: string): string;
     create(data: {
         captainId: string;
         mode: FlightMode;
@@ -23,8 +24,9 @@ export declare class FlightService {
         minutes: number;
         scheduledIds?: string;
         seatNum?: string;
+        focusScene: number;
     }): Promise<Flight>;
-    join(flightId: string, userId: string, seatNum: string): Promise<FlightPassenger>;
+    join(flightId: string, userId: string, seatNum: string, focusScene?: number): Promise<FlightPassenger>;
     giveUp(flightId: string, userId: string): Promise<{
         flyMode: FlyMode;
     }>;
@@ -37,7 +39,6 @@ export declare class FlightService {
     }) | null>;
     getMyFlights(userId: string): Promise<FlightDto[]>;
     getInvites(userId: string): Promise<any[]>;
-    getTimeline(flightId: string): Promise<FlightPassengerStatusLog[]>;
     getFlightPassengers(flightId: string): Promise<FlightPassenger[]>;
     updateFlightStatus(flightId: string, status: FlightStatus, crashByUserId?: string): Promise<void>;
     findFlightById(flightId: string): Promise<Flight | null>;
@@ -50,30 +51,21 @@ export declare class FlightService {
         start: number;
         end: number;
     }>;
-    soloEnd(userId: string): Promise<void>;
+    getCachedFlightDto(flightId: string): Promise<FlightDto | null>;
+    setCachedFlightDto(flightId: string, dto: FlightDto): Promise<void>;
+    removeCachedFlightDto(flightId: string): Promise<void>;
+    getAllCachedFlights(): Promise<FlightDto[]>;
+    ensureCached(flightId: string): Promise<FlightDto | null>;
+    cleanupFlightCache(flightId: string): Promise<void>;
+    setSeatInCache(flightId: string, seat: FlightSeatDto, userId: string, role: number): Promise<void>;
+    removeSeatFromCache(flightId: string, seatNum: string): Promise<void>;
+    updateSeatInCache(flightId: string, userId: string, updates: Partial<FlightSeatDto>): Promise<void>;
+    findUserSeatInCache(flightId: string, userId: string): Promise<FlightSeatDto | null>;
+    getActiveSeatCount(flightId: string): Promise<number>;
+    getSeatsFromCache(flightId: string): Promise<FlightSeatDto[]>;
     private addPassenger;
     private writeStatusLog;
     getUpcomingGroupFlights(): Promise<any[]>;
-    removeGroupFlightFromIndex(flightId: string): Promise<void>;
-    setSeatInRedis(flightId: string, seat: {
-        userId: string;
-        seatNum: string;
-        status: number;
-        focusStatus: number;
-        role: number;
-        isActive: boolean;
-    }): Promise<void>;
-    removeSeatFromRedis(flightId: string, seatNum: string): Promise<void>;
     private persistSeatsToDb;
-    findUserSeatInRedis(flightId: string, userId: string): Promise<{
-        userId: string;
-        seatNum: string;
-        status: number;
-        focusStatus: number;
-        role: number;
-        isActive: boolean;
-    } | null>;
-    getActiveSeatCount(flightId: string): Promise<number>;
-    getSeatsFromRedis(flightId: string): Promise<FlightSeatDto[]>;
     toFlightDto(flight: Flight): Promise<FlightDto>;
 }

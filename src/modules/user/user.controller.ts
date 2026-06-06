@@ -16,12 +16,6 @@ export class UserController {
     return ApiUtil.ok(user);
   }
 
-  @Post('device-token')
-  async registerDeviceToken(@Body() body: { userId: string; token: string }) {
-    await this.userService.updateDeviceToken(body.userId, body.token);
-    return ApiUtil.ok(null);
-  }
-
   @Get('friends/:userId')
   async getFriends(@Param('userId') userId: string) {
     const friendships = await this.friendshipService.getFriends(userId);

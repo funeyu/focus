@@ -1,5 +1,6 @@
 import { FlightGateway } from './flight.gateway';
 import { FlyMode, FlightStatus, UserFlyStatus, SeatFocusStatus } from '../../models/enums';
+import { FlightDto } from '../../models/dtos';
 
 function mockWs(overrides: Record<string, any> = {}): any {
   return {
@@ -10,24 +11,50 @@ function mockWs(overrides: Record<string, any> = {}): any {
   };
 }
 
+function makeDto(overrides: Partial<FlightDto> = {}): FlightDto {
+  return {
+    id: '1',
+    captainId: 'u1',
+    mode: 1,
+    flyMode: FlyMode.SAFE,
+    status: FlightStatus.FLYING,
+    from: 1,
+    to: 2,
+    takeoffAt: 100,
+    arrivalAt: 1600,
+    createdAt: 100,
+    minutes: 25,
+    crashByUserId: null,
+    captain: null,
+    scheduledUsers: [],
+    seats: [],
+    ...overrides,
+  } as FlightDto;
+}
+
 function makeGateway() {
-  const redis: any = {
-    hset: jest.fn().mockResolvedValue(undefined),
-    hget: jest.fn().mockResolvedValue('0'),
-    hgetall: jest.fn().mockResolvedValue({ flyMode: String(FlyMode.SAFE) }),
-    hvals: jest.fn().mockResolvedValue([]),
-  };
+  const redis: any = {};
+
   const flightService: any = {
-    leaveSeat: jest.fn().mockResolvedValue(undefined),
+    leaveSeat: jest.fn().mockResolvedValue({ flyMode: FlyMode.SAFE }),
     backSeat: jest.fn().mockResolvedValue(undefined),
-    giveUp: jest.fn().mockResolvedValue(undefined),
+    giveUp: jest.fn().mockResolvedValue({ flyMode: FlyMode.SAFE }),
     updateFlightStatus: jest.fn().mockResolvedValue(undefined),
     findFlightById: jest.fn().mockResolvedValue({ arrivalAt: 100 }),
     getFlightPassengers: jest.fn().mockResolvedValue([]),
+    getCachedFlightDto: jest.fn().mockResolvedValue(null),
+    setCachedFlightDto: jest.fn().mockResolvedValue(undefined),
+    ensureCached: jest.fn().mockResolvedValue(null),
+    updateSeatInCache: jest.fn().mockResolvedValue(undefined),
+    setActiveSeatInCache: jest.fn().mockResolvedValue(undefined),
+    getActiveSeatCount: jest.fn().mockResolvedValue(0),
+    cleanupFlightCache: jest.fn().mockResolvedValue(undefined),
   };
+
   const statsService: any = {
     settleFlight: jest.fn().mockResolvedValue(undefined),
   };
+
   const friendshipService: any = {
     getRawFriendships: jest.fn().mockResolvedValue([]),
   };
@@ -81,9 +108,9 @@ describe('FlightGateway', () => {
       const ws2 = mockWs();
       const ws3 = mockWs();
 
-      gateway.onJoinFlight(ws1, { flightId: '1', userId: 'u1' });
-      gateway.onJoinFlight(ws2, { flightId: '2', userId: 'u2' });
-      gateway.onJoinFlight(ws3, { flightId: '1', userId: 'u3' });
+      gateway.onEnterCabin(ws1, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws2, { flightId: '2', userId: 'u2' });
+      gateway.onEnterCabin(ws3, { flightId: '1', userId: 'u3' });
 
       gateway.broadcastToRoom('flight:1', 'test', { ok: true });
 
@@ -98,7 +125,7 @@ describe('FlightGateway', () => {
       (gateway as any).server = { clients: { forEach: forEachSpy } };
 
       const ws = mockWs();
-      gateway.onJoinFlight(ws, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws, { flightId: '1', userId: 'u1' });
 
       gateway.broadcastToRoom('flight:1', 'test', {});
 
@@ -117,11 +144,11 @@ describe('FlightGateway', () => {
       const ws2 = mockWs();
       const ws3 = mockWs();
 
-      gateway.onJoinFlight(ws1, { flightId: '1', userId: 'u1' });
-      gateway.onJoinFlight(ws2, { flightId: '2', userId: 'u2' });
-      gateway.onJoinFlight(ws3, { flightId: '3', userId: 'u3' });
+      gateway.onEnterCabin(ws1, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws2, { flightId: '2', userId: 'u2' });
+      gateway.onEnterCabin(ws3, { flightId: '3', userId: 'u3' });
 
-      // Flush pending broadcasts from onJoinFlight
+      // Flush pending broadcasts from onEnterCabin
       await new Promise(r => setTimeout(r, 0));
 
       (ws1.send as jest.Mock).mockClear();
@@ -142,8 +169,8 @@ describe('FlightGateway', () => {
       const ws1 = mockWs();
       const ws2 = mockWs();
 
-      gateway.onJoinFlight(ws1, { flightId: '1', userId: 'u1' });
-      gateway.onJoinFlight(ws2, { flightId: '2', userId: 'u1' });
+      gateway.onEnterCabin(ws1, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws2, { flightId: '2', userId: 'u1' });
 
       gateway.handleDisconnect(ws1);
 
@@ -155,7 +182,7 @@ describe('FlightGateway', () => {
       const { gateway } = makeGateway();
       const ws1 = mockWs();
 
-      gateway.onJoinFlight(ws1, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws1, { flightId: '1', userId: 'u1' });
       gateway.handleDisconnect(ws1);
 
       const userClients: Map<string, Set<any>> = (gateway as any).userClients;
@@ -166,6 +193,7 @@ describe('FlightGateway', () => {
   describe('handleCrash parallelization', () => {
     it('should call settleFlight and getFlightPassengers', async () => {
       const { gateway, flightService, statsService } = makeGateway();
+      flightService.getCachedFlightDto.mockResolvedValue(makeDto());
       flightService.updateFlightStatus.mockImplementation(() => new Promise(r => setTimeout(r, 10)));
       statsService.settleFlight.mockImplementation(() => new Promise(r => setTimeout(r, 10)));
       flightService.getFlightPassengers.mockResolvedValue([]);
@@ -179,36 +207,43 @@ describe('FlightGateway', () => {
   });
 
   describe('leaveSeat flyMode from service', () => {
-    it('should not call redis.hgetall when flyMode comes from service', async () => {
-      const { gateway, flightService, redis } = makeGateway();
+    it('should not call redis directly when flyMode comes from service', async () => {
+      const { gateway, flightService } = makeGateway();
       flightService.leaveSeat.mockResolvedValue({ flyMode: FlyMode.CRASH });
+      flightService.getCachedFlightDto.mockResolvedValue(makeDto({ flyMode: FlyMode.CRASH, status: FlightStatus.FLYING }));
 
       const ws = mockWs();
-      gateway.onJoinFlight(ws, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws, { flightId: '1', userId: 'u1' });
 
       gateway.shouldCrash = () => false;
 
       await gateway.onLeaveSeat(ws, { flightId: '1', userId: 'u1' });
 
-      expect(redis.hgetall).not.toHaveBeenCalled();
+      expect(flightService.getCachedFlightDto).toHaveBeenCalledWith('1');
     });
   });
 
-  describe('broadcastSeatUpdate is awaitable', () => {
-    it('should be awaitable and preserve order', async () => {
-      const { gateway, redis, userService } = makeGateway();
-      const seatData = JSON.stringify({ userId: 'u1', seatNum: 'A1', status: UserFlyStatus.FOCUSING, focusStatus: SeatFocusStatus.FOCUSED, role: 0, isActive: true });
-      redis.hvals.mockResolvedValue([seatData]);
-      userService.findByIds.mockResolvedValue([{ id: 'u1', avatar: 'a', name: 'n', vip: false }]);
+  describe('broadcastSeatUpdate reads from FlightDto cache', () => {
+    it('should send seats from cached FlightDto', async () => {
+      const { gateway, flightService } = makeGateway();
+      const dto = makeDto({
+        seats: [
+          { num: 'A1', userInfo: { id: 'u1', name: 'n', avatar: 'a', vip: false }, userStatus: UserFlyStatus.FOCUSING, focusStatus: SeatFocusStatus.FOCUSED, isActive: true },
+        ],
+      });
+      flightService.getCachedFlightDto.mockResolvedValue(dto);
 
       const ws = mockWs();
-      gateway.onJoinFlight(ws, { flightId: '1', userId: 'u1' });
+      gateway.onEnterCabin(ws, { flightId: '1', userId: 'u1' });
 
       await gateway.broadcastSeatUpdate('1');
 
+      expect(flightService.getCachedFlightDto).toHaveBeenCalledWith('1');
       expect(ws.send).toHaveBeenCalled();
       const sent = JSON.parse((ws.send as jest.Mock).mock.calls[0][0]);
       expect(sent.event).toBe('all.seats');
+      expect(sent.data).toHaveLength(1);
+      expect(sent.data[0].num).toBe('A1');
     });
   });
 });

@@ -26,10 +26,6 @@ let UserController = class UserController {
         const user = await this.userService.create(body);
         return api_util_1.ApiUtil.ok(user);
     }
-    async registerDeviceToken(body) {
-        await this.userService.updateDeviceToken(body.userId, body.token);
-        return api_util_1.ApiUtil.ok(null);
-    }
     async getFriends(userId) {
         const friendships = await this.friendshipService.getFriends(userId);
         return api_util_1.ApiUtil.ok(friendships);
@@ -43,13 +39,6 @@ __decorate([
     __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], UserController.prototype, "create", null);
-__decorate([
-    (0, common_1.Post)('device-token'),
-    __param(0, (0, common_1.Body)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
-    __metadata("design:returntype", Promise)
-], UserController.prototype, "registerDeviceToken", null);
 __decorate([
     (0, common_1.Get)('friends/:userId'),
     __param(0, (0, common_1.Param)('userId')),

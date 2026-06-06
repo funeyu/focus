@@ -16,6 +16,6 @@ export declare class Flight {
     seats: {
         num: string;
         userId: string;
-        userStatus: number;
+        focusScene: number;
     }[] | null;
 }

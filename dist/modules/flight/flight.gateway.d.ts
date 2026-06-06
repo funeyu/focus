@@ -20,10 +20,6 @@ export declare class FlightGateway implements OnGatewayConnection, OnGatewayDisc
     shouldCrash(flyMode: FlyMode, action: 'leave' | 'giveup', randomValue: number): boolean;
     handleConnection(client: WebSocket, ...args: any[]): Promise<void>;
     handleDisconnect(client: WebSocket): void;
-    onJoinFlight(client: WebSocket, data: {
-        flightId: string;
-        userId: string;
-    }): Promise<void>;
     onEnterCabin(client: WebSocket, data: {
         flightId: string;
         userId: string;
@@ -36,7 +32,7 @@ export declare class FlightGateway implements OnGatewayConnection, OnGatewayDisc
         flightId: string;
         userId: string;
         seatNum: string;
-        userStatus: number;
+        focusScene: number;
     }): Promise<void>;
     onLeaveSeat(client: WebSocket, data: {
         flightId: string;

@@ -2,7 +2,7 @@ import { FlightMode, FlightStatus, FlyMode, SeatFocusStatus } from '../enums';
 export declare class FlightSeatPairDto {
     num: string;
     userId: string;
-    userStatus: number;
+    focusScene: number;
 }
 export declare class FlightSeatDto {
     num: string;
@@ -12,7 +12,7 @@ export declare class FlightSeatDto {
         avatar: string;
         vip: boolean;
     } | null;
-    userStatus: number;
+    focusScene: number;
     focusStatus: number;
     isActive: boolean;
 }

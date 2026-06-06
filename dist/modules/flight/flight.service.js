@@ -23,6 +23,7 @@ const id_util_1 = require("../../common/id.util");
 const friendship_service_1 = require("../user/friendship.service");
 const user_service_1 = require("../user/user.service");
 const redis_module_1 = require("../../common/redis.module");
+const FLIGHT_DTO_PREFIX = 'flightDto:';
 let FlightService = class FlightService {
     constructor(flightRepo, passengerRepo, statusLogRepo, redis, friendshipService, userService) {
         this.flightRepo = flightRepo;
@@ -32,8 +33,16 @@ let FlightService = class FlightService {
         this.friendshipService = friendshipService;
         this.userService = userService;
     }
+    cacheKey(flightId) {
+        return `${FLIGHT_DTO_PREFIX}${flightId}`;
+    }
     async create(data) {
         const now = Math.floor(Date.now() / 1000);
+        const seat = {
+            num: data.seatNum || '',
+            userId: data.captainId,
+            focusScene: data.focusScene,
+        };
         const flight = this.flightRepo.create({
             id: id_util_1.IdUtil.next('flight'),
             captainId: data.captainId,
@@ -47,37 +56,16 @@ let FlightService = class FlightService {
             createdAt: now,
             scheduledIds: data.scheduledIds || '',
             minutes: data.minutes,
+            seats: [seat]
         });
         const saved = await this.flightRepo.save(flight);
-        await this.redis.hset(`flight:${saved.id}`, {
-            status: enums_1.FlightStatus.PENDING,
-            takeoffAt: saved.takeoffAt,
-            arrivalAt: saved.arrivalAt,
-            flyMode: saved.flyMode,
-            mode: saved.mode,
-            captainId: saved.captainId,
-            minutes: saved.minutes,
-            from: saved.from,
-            to: saved.to,
-        });
-        if (data.mode === enums_1.FlightMode.MULTIPLE) {
-            await this.redis.zadd('group:flights', saved.takeoffAt, saved.id);
-        }
         if (data.seatNum) {
             await this.addPassenger(saved.id, data.captainId, enums_1.Role.CAPTAIN, data.seatNum);
-            await this.setSeatInRedis(saved.id, {
-                userId: data.captainId,
-                seatNum: data.seatNum,
-                status: enums_1.UserFlyStatus.FOCUSING,
-                focusStatus: enums_1.SeatFocusStatus.NOT_STARTED,
-                role: enums_1.Role.CAPTAIN,
-                isActive: true,
-            });
             await this.writeStatusLog(saved.id, data.captainId, enums_1.UserFlyStatus.FOCUSING);
         }
         return saved;
     }
-    async join(flightId, userId, seatNum) {
+    async join(flightId, userId, seatNum, focusScene = 0) {
         const flight = await this.flightRepo.findOne({ where: { id: flightId } });
         if (!flight)
             throw new common_1.BadRequestException('flight not found');
@@ -94,14 +82,13 @@ let FlightService = class FlightService {
         }
         const role = flight.captainId === userId ? enums_1.Role.CAPTAIN : enums_1.Role.PASSENGER;
         const passenger = await this.addPassenger(flightId, userId, role, seatNum);
-        await this.setSeatInRedis(flightId, {
-            userId,
-            seatNum,
-            status: enums_1.UserFlyStatus.FOCUSING,
+        await this.setSeatInCache(flightId, {
+            num: seatNum,
+            userInfo: null,
+            focusScene,
             focusStatus: enums_1.SeatFocusStatus.NOT_STARTED,
-            role,
             isActive: true,
-        });
+        }, userId, role);
         await this.writeStatusLog(flightId, userId, enums_1.UserFlyStatus.FOCUSING);
         const updatedPassengers = await this.passengerRepo.find({ where: { flightId } });
         const userIds = updatedPassengers.map(p => p.userId);
@@ -115,31 +102,21 @@ let FlightService = class FlightService {
             passenger.status = enums_1.UserFlyStatus.GIVEUP;
             passenger.quitAt = Math.floor(Date.now() / 1000);
             await this.passengerRepo.save(passenger);
-            if (passenger.seatNum) {
-                await this.removeSeatFromRedis(flightId, passenger.seatNum);
-            }
+            await this.removeSeatFromCache(flightId, passenger.seatNum);
         }
-        const flightData = await this.redis.hget(`flight:${flightId}`, 'flyMode');
-        return { flyMode: parseInt(flightData, 10) || enums_1.FlyMode.SAFE };
+        const dto = await this.getCachedFlightDto(flightId);
+        return { flyMode: dto?.flyMode ?? enums_1.FlyMode.SAFE };
     }
     async leaveSeat(flightId, userId) {
         await this.writeStatusLog(flightId, userId, enums_1.UserFlyStatus.LEAVE);
-        const seat = await this.findUserSeatInRedis(flightId, userId);
-        if (seat) {
-            seat.focusStatus = enums_1.SeatFocusStatus.DISTRACTED;
-            await this.setSeatInRedis(flightId, seat);
-        }
-        const flightData = await this.redis.hget(`flight:${flightId}`, 'flyMode');
-        return { flyMode: parseInt(flightData, 10) || enums_1.FlyMode.SAFE };
+        await this.updateSeatInCache(flightId, userId, { focusStatus: enums_1.SeatFocusStatus.DISTRACTED });
+        const dto = await this.getCachedFlightDto(flightId);
+        return { flyMode: dto?.flyMode ?? enums_1.FlyMode.SAFE };
     }
     async backSeat(flightId, userId) {
         await this.writeStatusLog(flightId, userId, enums_1.UserFlyStatus.BACK);
         await this.writeStatusLog(flightId, userId, enums_1.UserFlyStatus.FOCUSING);
-        const seat = await this.findUserSeatInRedis(flightId, userId);
-        if (seat) {
-            seat.focusStatus = enums_1.SeatFocusStatus.FOCUSED;
-            await this.setSeatInRedis(flightId, seat);
-        }
+        await this.updateSeatInCache(flightId, userId, { focusStatus: enums_1.SeatFocusStatus.FOCUSED });
     }
     async getFlightDetail(flightId) {
         const flight = await this.flightRepo.findOne({ where: { id: flightId } });
@@ -178,8 +155,11 @@ let FlightService = class FlightService {
         const dtos = await Promise.all(active.map(f => this.toFlightDto(f)));
         for (let i = 0; i < active.length; i++) {
             if (active[i].status === enums_1.FlightStatus.FLYING) {
-                const seat = await this.findUserSeatInRedis(active[i].id, userId);
-                dtos[i].focusStatus = seat?.focusStatus ?? enums_1.SeatFocusStatus.FOCUSED;
+                const cached = await this.getCachedFlightDto(active[i].id);
+                if (cached) {
+                    const seat = cached.seats.find(s => s.userInfo?.id === userId);
+                    dtos[i].focusStatus = seat?.focusStatus ?? enums_1.SeatFocusStatus.FOCUSED;
+                }
             }
         }
         return dtos;
@@ -203,12 +183,6 @@ let FlightService = class FlightService {
         invited.sort((a, b) => a.takeoffAt - b.takeoffAt);
         return Promise.all(invited.map(f => this.toFlightDto(f)));
     }
-    async getTimeline(flightId) {
-        return this.statusLogRepo.find({
-            where: { flightId },
-            order: { timestamp: 'ASC' },
-        });
-    }
     async getFlightPassengers(flightId) {
         return this.passengerRepo.find({ where: { flightId } });
     }
@@ -230,12 +204,18 @@ let FlightService = class FlightService {
         if (data.takeoffAt != null) {
             flight.takeoffAt = data.takeoffAt;
             flight.arrivalAt = data.takeoffAt + flight.minutes * 60;
-            await this.redis.hset(`flight:${flightId}`, { takeoffAt: flight.takeoffAt, arrivalAt: flight.arrivalAt });
         }
         if (data.scheduledIds != null) {
             flight.scheduledIds = data.scheduledIds;
         }
-        return this.flightRepo.save(flight);
+        const saved = await this.flightRepo.save(flight);
+        const cached = await this.getCachedFlightDto(flightId);
+        if (cached) {
+            cached.takeoffAt = saved.takeoffAt;
+            cached.arrivalAt = saved.arrivalAt;
+            await this.setCachedFlightDto(flightId, cached);
+        }
+        return saved;
     }
     async deleteFlight(flightId, userId) {
         const flight = await this.flightRepo.findOne({ where: { id: flightId } });
@@ -247,24 +227,127 @@ let FlightService = class FlightService {
             throw new common_1.BadRequestException('cannot delete a flying flight');
         await this.passengerRepo.delete({ flightId });
         await this.flightRepo.delete({ id: flightId });
-        await this.redis.del(`flight:${flightId}:seats`);
-        await this.redis.del(`flight:${flightId}`);
-        await this.redis.zrem('group:flights', flightId);
+        await this.removeCachedFlightDto(flightId);
     }
     async soloBegin(userId, minutes) {
-        const key = `solo:${userId}`;
         const now = Math.floor(Date.now() / 1000);
         const end = now + minutes * 60;
-        await this.redis.hset(key, {
-            start: now,
-            end,
-            status: 'flying',
-        });
         return { start: now, end };
     }
-    async soloEnd(userId) {
-        const key = `solo:${userId}`;
-        await this.redis.del(key);
+    async getCachedFlightDto(flightId) {
+        const raw = await this.redis.get(this.cacheKey(flightId));
+        if (!raw)
+            return null;
+        try {
+            return JSON.parse(raw);
+        }
+        catch {
+            return null;
+        }
+    }
+    async setCachedFlightDto(flightId, dto) {
+        const ttl = dto.arrivalAt - Math.floor(Date.now() / 1000) + 60;
+        if (ttl > 0) {
+            await this.redis.set(this.cacheKey(flightId), JSON.stringify(dto), 'EX', ttl);
+        }
+    }
+    async removeCachedFlightDto(flightId) {
+        await this.redis.del(this.cacheKey(flightId));
+    }
+    async getAllCachedFlights() {
+        const keys = await this.redis.keys(`${FLIGHT_DTO_PREFIX}*`);
+        if (keys.length === 0)
+            return [];
+        const values = await this.redis.mget(...keys);
+        const dtos = [];
+        for (const raw of values) {
+            if (!raw)
+                continue;
+            try {
+                dtos.push(JSON.parse(raw));
+            }
+            catch { }
+        }
+        return dtos;
+    }
+    async ensureCached(flightId) {
+        const existing = await this.getCachedFlightDto(flightId);
+        if (existing)
+            return existing;
+        const flight = await this.flightRepo.findOne({ where: { id: flightId } });
+        if (!flight)
+            return null;
+        const now = Math.floor(Date.now() / 1000);
+        if (flight.status === enums_1.FlightStatus.FLYING) {
+        }
+        else if (flight.status === enums_1.FlightStatus.PENDING && flight.takeoffAt - now <= 60) {
+        }
+        else {
+            return null;
+        }
+        const dto = await this.toFlightDto(flight);
+        await this.setCachedFlightDto(flightId, dto);
+        return dto;
+    }
+    async cleanupFlightCache(flightId) {
+        await this.removeCachedFlightDto(flightId);
+    }
+    async setSeatInCache(flightId, seat, userId, role) {
+        const dto = await this.getCachedFlightDto(flightId);
+        if (!dto)
+            return;
+        const users = await this.userService.findByIds([userId]);
+        const user = users[0] || null;
+        seat.userInfo = user ? { id: user.id, name: user.name, avatar: user.avatar, vip: user.vip } : null;
+        const idx = dto.seats.findIndex(s => s.num === seat.num);
+        if (idx >= 0) {
+            dto.seats[idx] = seat;
+        }
+        else {
+            dto.seats.push(seat);
+        }
+        await this.setCachedFlightDto(flightId, dto);
+        await this.persistSeatsToDb(flightId, { num: seat.num, userId, focusScene: seat.focusScene });
+    }
+    async removeSeatFromCache(flightId, seatNum) {
+        const dto = await this.getCachedFlightDto(flightId);
+        if (!dto)
+            return;
+        dto.seats = dto.seats.filter(s => s.num !== seatNum);
+        await this.setCachedFlightDto(flightId, dto);
+        const flight = await this.flightRepo.findOne({ where: { id: flightId } });
+        if (!flight)
+            return;
+        const seats = (flight.seats || []).filter(s => s.num !== seatNum);
+        await this.flightRepo.update({ id: flightId }, { seats });
+    }
+    async updateSeatInCache(flightId, userId, updates) {
+        const dto = await this.getCachedFlightDto(flightId);
+        if (!dto)
+            return;
+        const seat = dto.seats.find(s => s.userInfo?.id === userId);
+        if (seat) {
+            Object.assign(seat, updates);
+            await this.setCachedFlightDto(flightId, dto);
+        }
+    }
+    async findUserSeatInCache(flightId, userId) {
+        const dto = await this.getCachedFlightDto(flightId);
+        if (!dto)
+            return null;
+        return dto.seats.find(s => s.userInfo?.id === userId) ?? null;
+    }
+    async getActiveSeatCount(flightId) {
+        const dto = await this.getCachedFlightDto(flightId);
+        if (!dto)
+            return 0;
+        return dto.seats.filter(s => s.isActive).length;
+    }
+    async getSeatsFromCache(flightId) {
+        const dto = await this.getCachedFlightDto(flightId);
+        if (!dto)
+            return [];
+        return dto.seats;
     }
     async addPassenger(flightId, userId, role, seatNum = '') {
         const now = Math.floor(Date.now() / 1000);
@@ -291,28 +374,10 @@ let FlightService = class FlightService {
     }
     async getUpcomingGroupFlights() {
         const now = Math.floor(Date.now() / 1000);
-        const flightIds = await this.redis.zrangebyscore('group:flights', now, '+inf');
-        if (flightIds.length === 0)
-            return [];
-        const flights = await this.flightRepo.findByIds(flightIds);
-        const pending = flights.filter(f => f.status === enums_1.FlightStatus.PENDING);
-        pending.sort((a, b) => a.takeoffAt - b.takeoffAt);
-        return Promise.all(pending.map(f => this.toFlightDto(f)));
-    }
-    async removeGroupFlightFromIndex(flightId) {
-        await this.redis.zrem('group:flights', flightId);
-    }
-    async setSeatInRedis(flightId, seat) {
-        await this.redis.hset(`flight:${flightId}:seats`, seat.seatNum, JSON.stringify(seat));
-        await this.persistSeatsToDb(flightId, { num: seat.seatNum, userId: seat.userId, userStatus: seat.status });
-    }
-    async removeSeatFromRedis(flightId, seatNum) {
-        await this.redis.hdel(`flight:${flightId}:seats`, seatNum);
-        const flight = await this.flightRepo.findOne({ where: { id: flightId } });
-        if (!flight)
-            return;
-        const seats = (flight.seats || []).filter(s => s.num !== seatNum);
-        await this.flightRepo.update({ id: flightId }, { seats });
+        const flights = await this.flightRepo.find({ where: { mode: enums_1.FlightMode.MULTIPLE, status: enums_1.FlightStatus.PENDING } });
+        const upcoming = flights.filter(f => f.takeoffAt > now);
+        upcoming.sort((a, b) => a.takeoffAt - b.takeoffAt);
+        return Promise.all(upcoming.map(f => this.toFlightDto(f)));
     }
     async persistSeatsToDb(flightId, seatData) {
         const flight = await this.flightRepo.findOne({ where: { id: flightId } });
@@ -328,41 +393,7 @@ let FlightService = class FlightService {
                 seats.push(seatData);
             }
         }
-        else {
-        }
         await this.flightRepo.update({ id: flightId }, { seats });
-    }
-    async findUserSeatInRedis(flightId, userId) {
-        const entries = await this.redis.hgetall(`flight:${flightId}:seats`);
-        for (const val of Object.values(entries)) {
-            const seat = JSON.parse(val);
-            if (seat.userId === userId)
-                return seat;
-        }
-        return null;
-    }
-    async getActiveSeatCount(flightId) {
-        const vals = await this.redis.hvals(`flight:${flightId}:seats`);
-        return vals.length;
-    }
-    async getSeatsFromRedis(flightId) {
-        const entries = await this.redis.hgetall(`flight:${flightId}:seats`);
-        if (Object.keys(entries).length === 0)
-            return [];
-        const rawSeats = Object.values(entries).map(v => JSON.parse(v));
-        const userIds = [...new Set(rawSeats.map((s) => s.userId))];
-        const users = await this.userService.findByIds(userIds);
-        const userMap = new Map(users.map(u => [u.id, u]));
-        return rawSeats.map((s) => {
-            const user = userMap.get(s.userId);
-            return {
-                num: s.seatNum,
-                userInfo: user ? { id: user.id, name: user.name, avatar: user.avatar, vip: user.vip } : null,
-                userStatus: s.status,
-                focusStatus: s.focusStatus,
-                isActive: s.isActive,
-            };
-        });
     }
     async toFlightDto(flight) {
         const scheduledIdList = flight.scheduledIds
@@ -382,7 +413,7 @@ let FlightService = class FlightService {
             return {
                 num: seatInfo.num,
                 userInfo: user ? { id: user.id, name: user.name, avatar: user.avatar, vip: user.vip } : null,
-                userStatus: seatInfo.userStatus,
+                focusScene: seatInfo.focusScene,
                 focusStatus: enums_1.SeatFocusStatus.FOCUSED,
                 isActive: true,
             };

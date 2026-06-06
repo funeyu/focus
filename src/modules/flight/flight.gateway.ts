@@ -15,16 +15,7 @@ import { TokenUtil } from '../../common/token.util';
 import { REDIS_CLIENT } from '../../common/redis.module';
 import { FriendshipService } from '../user/friendship.service';
 import { UserService } from '../user/user.service';
-
-interface FlightSeat {
-  flightId: string;
-  userId: string;
-  status: number;
-  focusStatus: number;
-  seatNum: string;
-  role: number;
-  isActive: boolean;
-}
+import { FlightDto } from '../../models/dtos';
 
 @WebSocketGateway({ path: '/api/ws' })
 export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -90,26 +81,6 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  @SubscribeMessage('joinFlight')
-  async onJoinFlight(client: WebSocket, data: { flightId: string; userId: string }) {
-    console.log('[WS] joinFlight', data);
-    const room = `flight:${data.flightId}`;
-    (client as any).room = room;
-    this.clientUserMap.set(client, data.userId);
-
-    if (!this.roomClients.has(room)) {
-      this.roomClients.set(room, new Set());
-    }
-    this.roomClients.get(room).add(client);
-
-    if (!this.userClients.has(data.userId)) {
-      this.userClients.set(data.userId, new Set());
-    }
-    this.userClients.get(data.userId).add(client);
-
-    this.broadcastFriendStatus(data.userId, 'flying');
-  }
-
   @SubscribeMessage('enterCabin')
   async onEnterCabin(client: WebSocket, data: { flightId: string; userId: string }) {
     console.log('[WS] enterCabin', data);
@@ -140,12 +111,18 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
     this.userClients.get(data.userId).add(client);
 
-    const seat = await this.flightService.findUserSeatInRedis(data.flightId, data.userId);
-    if (seat) {
-      seat.isActive = true;
-      seat.focusStatus = SeatFocusStatus.FOCUSED;
-      await this.flightService.setSeatInRedis(data.flightId, seat);
+    // Ensure flight is cached and in active set
+    const dto = await this.flightService.ensureCached(data.flightId);
+
+    if (dto) {
+      const seat = dto.seats.find(s => s.userInfo?.id === data.userId);
+      if (seat) {
+        seat.isActive = true;
+        seat.focusStatus = SeatFocusStatus.FOCUSED;
+        await this.flightService.setCachedFlightDto(data.flightId, dto);
+      }
     }
+
     await this.broadcastSeatUpdate(data.flightId);
     this.broadcastFriendStatus(data.userId, 'flying');
   }
@@ -153,18 +130,15 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('leaveCabin')
   async onLeaveCabin(client: WebSocket, data: { flightId: string; userId: string }) {
     console.log('[WS] leaveCabin', data);
-    const seat = await this.flightService.findUserSeatInRedis(data.flightId, data.userId);
-    if (!seat) return;
-    seat.focusStatus = SeatFocusStatus.DISTRACTED;
-    await this.flightService.setSeatInRedis(data.flightId, seat);
+    await this.flightService.updateSeatInCache(data.flightId, data.userId, { focusStatus: SeatFocusStatus.DISTRACTED });
     await this.broadcastSeatUpdate(data.flightId);
   }
 
   @SubscribeMessage('pick.seat')
-  async onPickSeat(client: WebSocket, data: { flightId: string; userId: string; seatNum: string; userStatus: number }) {
+  async onPickSeat(client: WebSocket, data: { flightId: string; userId: string; seatNum: string; focusScene: number }) {
     console.log('[WS] pick.seat', data);
     try {
-      await this.flightService.join(data.flightId, data.userId, data.seatNum);
+      await this.flightService.join(data.flightId, data.userId, data.seatNum, data.focusScene);
       await this.broadcastSeatUpdate(data.flightId);
       this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'ok');
     } catch (err) {
@@ -176,9 +150,9 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async onLeaveSeat(client: WebSocket, data: { flightId: string; userId: string }) {
     console.log('[WS] leaveSeat', data);
     const { flyMode } = await this.flightService.leaveSeat(data.flightId, data.userId);
-    const flightStatus = parseInt(await this.redis.hget(`flight:${data.flightId}`, 'status'));
+    const dto = await this.flightService.getCachedFlightDto(data.flightId);
 
-    if (flightStatus === FlightStatus.FLYING && this.shouldCrash(flyMode, 'leave', Math.random())) {
+    if (dto?.status === FlightStatus.FLYING && this.shouldCrash(flyMode, 'leave', Math.random())) {
       await this.handleCrash(data.flightId, data.userId);
     } else {
       await this.broadcastSeatUpdate(data.flightId);
@@ -198,9 +172,9 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async onGiveUpFlight(client: WebSocket, data: { flightId: string; userId: string }) {
     console.log('[WS] giveUpFlight', data);
     const { flyMode } = await this.flightService.giveUp(data.flightId, data.userId);
-    const flightStatus = parseInt(await this.redis.hget(`flight:${data.flightId}`, 'status'));
-    console.log('giveUpFlight flyMode', flyMode, 'flightStatus', flightStatus);
-    if (flightStatus !== FlightStatus.FLYING) {
+    const dto = await this.flightService.getCachedFlightDto(data.flightId);
+    console.log('giveUpFlight flyMode', flyMode, 'flightStatus', dto?.status);
+    if (dto?.status !== FlightStatus.FLYING) {
       return;
     }
 
@@ -218,11 +192,18 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private async handleCrash(flightId: string, crashByUserId: string) {
     console.log('crashByUserId', crashByUserId);
+
+    // Update cache status to CRASH
+    const dto = await this.flightService.getCachedFlightDto(flightId);
+    if (dto) {
+      dto.status = FlightStatus.CRASH;
+      await this.flightService.setCachedFlightDto(flightId, dto);
+    }
+
     await Promise.all([
-      this.redis.hset(`flight:${flightId}`, 'status', String(FlightStatus.CRASH)),
       this.flightService.updateFlightStatus(flightId, FlightStatus.CRASH, crashByUserId),
       this.flightService.findFlightById(flightId),
-    ]).then(async ([, , flight]) => {
+    ]).then(async ([, flight]) => {
       if (flight) {
         const [passengers, _, crashByUser] = await Promise.all([
           this.flightService.getFlightPassengers(flightId),
@@ -237,30 +218,17 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
           }
         }
       }
+
+      // Clean up cache and active set
+      await this.flightService.cleanupFlightCache(flightId);
     });
   }
 
   async broadcastSeatUpdate(flightId: string) {
     try {
-      const vals = await this.redis.hvals(`flight:${flightId}:seats`);
-      const userIds = vals.map(v => JSON.parse(v).userId);
-      const users = await this.userService.findByIds(userIds);
-      const userMap = new Map(users.map(u => [u.id, u]));
-
-      const seats = [];
-      for (const v of vals) {
-        const seat = JSON.parse(v);
-        const user = userMap.get(seat.userId);
-        seats.push({
-          num: seat.seatNum,
-          userInfo: user ? { id: user.id, avatar: user.avatar, name: user.name, vip: user.vip } : null,
-          userStatus: seat.status,
-          focusStatus: seat.focusStatus ?? SeatFocusStatus.NOT_STARTED
-          ,
-          isActive: seat.isActive,
-        });
-      }
-      this.broadcastToRoom(`flight:${flightId}`, 'all.seats', seats);
+      const dto = await this.flightService.getCachedFlightDto(flightId);
+      if (!dto) return;
+      this.broadcastToRoom(`flight:${flightId}`, 'all.seats', dto.seats);
     } catch (err) {
       console.error(`broadcastSeatUpdate failed for flight ${flightId}:`, err);
     }

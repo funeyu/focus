@@ -4,5 +4,4 @@ export declare class User {
     avatar: string;
     vip: boolean;
     region: string;
-    deviceToken: string;
 }

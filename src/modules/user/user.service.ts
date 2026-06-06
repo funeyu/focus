@@ -31,7 +31,4 @@ export class UserService {
     return this.userRepo.findByIds(ids);
   }
 
-  async updateDeviceToken(userId: string, token: string): Promise<void> {
-    await this.userRepo.update({ id: userId }, { deviceToken: token });
-  }
 }

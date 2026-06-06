@@ -80,21 +80,6 @@ let FlightGateway = class FlightGateway {
             }
         }
     }
-    async onJoinFlight(client, data) {
-        console.log('[WS] joinFlight', data);
-        const room = `flight:${data.flightId}`;
-        client.room = room;
-        this.clientUserMap.set(client, data.userId);
-        if (!this.roomClients.has(room)) {
-            this.roomClients.set(room, new Set());
-        }
-        this.roomClients.get(room).add(client);
-        if (!this.userClients.has(data.userId)) {
-            this.userClients.set(data.userId, new Set());
-        }
-        this.userClients.get(data.userId).add(client);
-        this.broadcastFriendStatus(data.userId, 'flying');
-    }
     async onEnterCabin(client, data) {
         console.log('[WS] enterCabin', data);
         const prevRoom = client.room;
@@ -118,28 +103,27 @@ let FlightGateway = class FlightGateway {
             this.userClients.set(data.userId, new Set());
         }
         this.userClients.get(data.userId).add(client);
-        const seat = await this.flightService.findUserSeatInRedis(data.flightId, data.userId);
-        if (seat) {
-            seat.isActive = true;
-            seat.focusStatus = enums_1.SeatFocusStatus.FOCUSED;
-            await this.flightService.setSeatInRedis(data.flightId, seat);
+        const dto = await this.flightService.ensureCached(data.flightId);
+        if (dto) {
+            const seat = dto.seats.find(s => s.userInfo?.id === data.userId);
+            if (seat) {
+                seat.isActive = true;
+                seat.focusStatus = enums_1.SeatFocusStatus.FOCUSED;
+                await this.flightService.setCachedFlightDto(data.flightId, dto);
+            }
         }
         await this.broadcastSeatUpdate(data.flightId);
         this.broadcastFriendStatus(data.userId, 'flying');
     }
     async onLeaveCabin(client, data) {
         console.log('[WS] leaveCabin', data);
-        const seat = await this.flightService.findUserSeatInRedis(data.flightId, data.userId);
-        if (!seat)
-            return;
-        seat.focusStatus = enums_1.SeatFocusStatus.DISTRACTED;
-        await this.flightService.setSeatInRedis(data.flightId, seat);
+        await this.flightService.updateSeatInCache(data.flightId, data.userId, { focusStatus: enums_1.SeatFocusStatus.DISTRACTED });
         await this.broadcastSeatUpdate(data.flightId);
     }
     async onPickSeat(client, data) {
         console.log('[WS] pick.seat', data);
         try {
-            await this.flightService.join(data.flightId, data.userId, data.seatNum);
+            await this.flightService.join(data.flightId, data.userId, data.seatNum, data.focusScene);
             await this.broadcastSeatUpdate(data.flightId);
             this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'ok');
         }
@@ -150,8 +134,8 @@ let FlightGateway = class FlightGateway {
     async onLeaveSeat(client, data) {
         console.log('[WS] leaveSeat', data);
         const { flyMode } = await this.flightService.leaveSeat(data.flightId, data.userId);
-        const flightStatus = parseInt(await this.redis.hget(`flight:${data.flightId}`, 'status'));
-        if (flightStatus === enums_1.FlightStatus.FLYING && this.shouldCrash(flyMode, 'leave', Math.random())) {
+        const dto = await this.flightService.getCachedFlightDto(data.flightId);
+        if (dto?.status === enums_1.FlightStatus.FLYING && this.shouldCrash(flyMode, 'leave', Math.random())) {
             await this.handleCrash(data.flightId, data.userId);
         }
         else {
@@ -168,9 +152,9 @@ let FlightGateway = class FlightGateway {
     async onGiveUpFlight(client, data) {
         console.log('[WS] giveUpFlight', data);
         const { flyMode } = await this.flightService.giveUp(data.flightId, data.userId);
-        const flightStatus = parseInt(await this.redis.hget(`flight:${data.flightId}`, 'status'));
-        console.log('giveUpFlight flyMode', flyMode, 'flightStatus', flightStatus);
-        if (flightStatus !== enums_1.FlightStatus.FLYING) {
+        const dto = await this.flightService.getCachedFlightDto(data.flightId);
+        console.log('giveUpFlight flyMode', flyMode, 'flightStatus', dto?.status);
+        if (dto?.status !== enums_1.FlightStatus.FLYING) {
             return;
         }
         const activeSeats = await this.flightService.getActiveSeatCount(data.flightId);
@@ -188,11 +172,15 @@ let FlightGateway = class FlightGateway {
     }
     async handleCrash(flightId, crashByUserId) {
         console.log('crashByUserId', crashByUserId);
+        const dto = await this.flightService.getCachedFlightDto(flightId);
+        if (dto) {
+            dto.status = enums_1.FlightStatus.CRASH;
+            await this.flightService.setCachedFlightDto(flightId, dto);
+        }
         await Promise.all([
-            this.redis.hset(`flight:${flightId}`, 'status', String(enums_1.FlightStatus.CRASH)),
             this.flightService.updateFlightStatus(flightId, enums_1.FlightStatus.CRASH, crashByUserId),
             this.flightService.findFlightById(flightId),
-        ]).then(async ([, , flight]) => {
+        ]).then(async ([, flight]) => {
             if (flight) {
                 const [passengers, _, crashByUser] = await Promise.all([
                     this.flightService.getFlightPassengers(flightId),
@@ -207,27 +195,15 @@ let FlightGateway = class FlightGateway {
                     }
                 }
             }
+            await this.flightService.cleanupFlightCache(flightId);
         });
     }
     async broadcastSeatUpdate(flightId) {
         try {
-            const vals = await this.redis.hvals(`flight:${flightId}:seats`);
-            const userIds = vals.map(v => JSON.parse(v).userId);
-            const users = await this.userService.findByIds(userIds);
-            const userMap = new Map(users.map(u => [u.id, u]));
-            const seats = [];
-            for (const v of vals) {
-                const seat = JSON.parse(v);
-                const user = userMap.get(seat.userId);
-                seats.push({
-                    num: seat.seatNum,
-                    userInfo: user ? { id: user.id, avatar: user.avatar, name: user.name, vip: user.vip } : null,
-                    userStatus: seat.status,
-                    focusStatus: seat.focusStatus ?? enums_1.SeatFocusStatus.NOT_STARTED,
-                    isActive: seat.isActive,
-                });
-            }
-            this.broadcastToRoom(`flight:${flightId}`, 'all.seats', seats);
+            const dto = await this.flightService.getCachedFlightDto(flightId);
+            if (!dto)
+                return;
+            this.broadcastToRoom(`flight:${flightId}`, 'all.seats', dto.seats);
         }
         catch (err) {
             console.error(`broadcastSeatUpdate failed for flight ${flightId}:`, err);
@@ -271,12 +247,6 @@ __decorate([
     (0, websockets_1.WebSocketServer)(),
     __metadata("design:type", ws_1.Server)
 ], FlightGateway.prototype, "server", void 0);
-__decorate([
-    (0, websockets_1.SubscribeMessage)('joinFlight'),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [ws_1.WebSocket, Object]),
-    __metadata("design:returntype", Promise)
-], FlightGateway.prototype, "onJoinFlight", null);
 __decorate([
     (0, websockets_1.SubscribeMessage)('enterCabin'),
     __metadata("design:type", Function),

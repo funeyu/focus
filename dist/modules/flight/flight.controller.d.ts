@@ -1,13 +1,11 @@
 import { FlightService } from './flight.service';
 import { FlightStatsService } from './flight-stats.service';
-import { FriendshipService } from '../user/friendship.service';
-import { UserService } from '../user/user.service';
+import Redis from 'ioredis';
 export declare class FlightController {
     private readonly flightService;
     private readonly statsService;
-    private readonly friendshipService;
-    private readonly userService;
-    constructor(flightService: FlightService, statsService: FlightStatsService, friendshipService: FriendshipService, userService: UserService);
+    private readonly redis;
+    constructor(flightService: FlightService, statsService: FlightStatsService, redis: Redis);
     create(body: {
         captainId: string;
         mode: number;
@@ -18,17 +16,15 @@ export declare class FlightController {
         minutes: number;
         scheduledIds?: string;
         seatNum?: string;
+        focusScene: number;
     }): Promise<{
         code: number;
         data: any;
     }>;
     join(flightId: string, userId: string, body: {
         seatNum: string;
+        focusScene: number;
     }): Promise<{
-        code: number;
-        data: any;
-    }>;
-    giveUp(flightId: string, userId: string): Promise<{
         code: number;
         data: any;
     }>;
@@ -36,17 +32,6 @@ export declare class FlightController {
         userId: string;
         minutes: number;
     }): Promise<{
-        code: number;
-        data: any;
-    }>;
-    soloEnd(body: {
-        userId: string;
-        focusMinutes: number;
-    }): Promise<{
-        code: number;
-        data: any;
-    }>;
-    polling(): Promise<{
         code: number;
         data: any;
     }>;
@@ -62,18 +47,6 @@ export declare class FlightController {
         code: number;
         data: any;
     }>;
-    timeline(flightId: string): Promise<{
-        code: number;
-        data: any;
-    }>;
-    friends(userId: string): Promise<{
-        code: number;
-        data: any;
-    }>;
-    seats(flightId: string): Promise<{
-        code: number;
-        data: any;
-    }>;
     detail(flightId: string): Promise<{
         code: number;
         data: any;
@@ -86,6 +59,10 @@ export declare class FlightController {
         data: any;
     }>;
     delete(flightId: string, userId: string): Promise<{
+        code: number;
+        data: any;
+    }>;
+    flushRedis(): Promise<{
         code: number;
         data: any;
     }>;
