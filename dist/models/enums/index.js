@@ -13,6 +13,7 @@ var SeatFocusStatus;
     SeatFocusStatus[SeatFocusStatus["FOCUSED"] = 0] = "FOCUSED";
     SeatFocusStatus[SeatFocusStatus["DISTRACTED"] = 1] = "DISTRACTED";
     SeatFocusStatus[SeatFocusStatus["NOT_STARTED"] = 2] = "NOT_STARTED";
+    SeatFocusStatus[SeatFocusStatus["GIVEUP"] = 3] = "GIVEUP";
 })(SeatFocusStatus || (exports.SeatFocusStatus = SeatFocusStatus = {}));
 var FlightMode;
 (function (FlightMode) {

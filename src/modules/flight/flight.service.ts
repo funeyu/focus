@@ -117,7 +117,7 @@ export class FlightService {
       passenger.status = UserFlyStatus.GIVEUP;
       passenger.quitAt = Math.floor(Date.now() / 1000);
       await this.passengerRepo.save(passenger);
-      await this.removeSeatFromCache(flightId, passenger.seatNum);
+      await this.updateSeatInCache(flightId, userId, { focusStatus: SeatFocusStatus.GIVEUP, isActive: false });
     }
     const dto = await this.getCachedFlightDto(flightId);
     return { flyMode: dto?.flyMode ?? FlyMode.SAFE };
@@ -319,33 +319,22 @@ export class FlightService {
 
   async setSeatInCache(flightId: string, seat: FlightSeatDto, userId: string, role: number): Promise<void> {
     const dto = await this.getCachedFlightDto(flightId);
-    if (!dto) return;
 
     const users = await this.userService.findByIds([userId]);
     const user = users[0] || null;
     seat.userInfo = user ? { id: user.id, name: user.name, avatar: user.avatar, vip: user.vip } : null;
 
-    const idx = dto.seats.findIndex(s => s.num === seat.num);
-    if (idx >= 0) {
-      dto.seats[idx] = seat;
-    } else {
-      dto.seats.push(seat);
+    if (dto) {
+      const idx = dto.seats.findIndex(s => s.num === seat.num);
+      if (idx >= 0) {
+        dto.seats[idx] = seat;
+      } else {
+        dto.seats.push(seat);
+      }
+      await this.setCachedFlightDto(flightId, dto);
     }
-    await this.setCachedFlightDto(flightId, dto);
+
     await this.persistSeatsToDb(flightId, { num: seat.num, userId, focusScene: seat.focusScene });
-  }
-
-  async removeSeatFromCache(flightId: string, seatNum: string): Promise<void> {
-    const dto = await this.getCachedFlightDto(flightId);
-    if (!dto) return;
-
-    dto.seats = dto.seats.filter(s => s.num !== seatNum);
-    await this.setCachedFlightDto(flightId, dto);
-
-    const flight = await this.flightRepo.findOne({ where: { id: flightId } });
-    if (!flight) return;
-    const seats = (flight.seats || []).filter(s => s.num !== seatNum);
-    await this.flightRepo.update({ id: flightId }, { seats });
   }
 
   async updateSeatInCache(flightId: string, userId: string, updates: Partial<FlightSeatDto>): Promise<void> {

@@ -120,17 +120,6 @@ let FlightGateway = class FlightGateway {
         await this.flightService.updateSeatInCache(data.flightId, data.userId, { focusStatus: enums_1.SeatFocusStatus.DISTRACTED });
         await this.broadcastSeatUpdate(data.flightId);
     }
-    async onPickSeat(client, data) {
-        console.log('[WS] pick.seat', data);
-        try {
-            await this.flightService.join(data.flightId, data.userId, data.seatNum, data.focusScene);
-            await this.broadcastSeatUpdate(data.flightId);
-            this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'ok');
-        }
-        catch (err) {
-            this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'error');
-        }
-    }
     async onLeaveSeat(client, data) {
         console.log('[WS] leaveSeat', data);
         const { flyMode } = await this.flightService.leaveSeat(data.flightId, data.userId);
@@ -259,12 +248,6 @@ __decorate([
     __metadata("design:paramtypes", [ws_1.WebSocket, Object]),
     __metadata("design:returntype", Promise)
 ], FlightGateway.prototype, "onLeaveCabin", null);
-__decorate([
-    (0, websockets_1.SubscribeMessage)('pick.seat'),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [ws_1.WebSocket, Object]),
-    __metadata("design:returntype", Promise)
-], FlightGateway.prototype, "onPickSeat", null);
 __decorate([
     (0, websockets_1.SubscribeMessage)('leaveSeat'),
     __metadata("design:type", Function),

@@ -58,7 +58,6 @@ export declare class FlightService {
     ensureCached(flightId: string): Promise<FlightDto | null>;
     cleanupFlightCache(flightId: string): Promise<void>;
     setSeatInCache(flightId: string, seat: FlightSeatDto, userId: string, role: number): Promise<void>;
-    removeSeatFromCache(flightId: string, seatNum: string): Promise<void>;
     updateSeatInCache(flightId: string, userId: string, updates: Partial<FlightSeatDto>): Promise<void>;
     findUserSeatInCache(flightId: string, userId: string): Promise<FlightSeatDto | null>;
     getActiveSeatCount(flightId: string): Promise<number>;

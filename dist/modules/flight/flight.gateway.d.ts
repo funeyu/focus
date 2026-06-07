@@ -28,12 +28,6 @@ export declare class FlightGateway implements OnGatewayConnection, OnGatewayDisc
         flightId: string;
         userId: string;
     }): Promise<void>;
-    onPickSeat(client: WebSocket, data: {
-        flightId: string;
-        userId: string;
-        seatNum: string;
-        focusScene: number;
-    }): Promise<void>;
     onLeaveSeat(client: WebSocket, data: {
         flightId: string;
         userId: string;

@@ -9,6 +9,7 @@ export enum SeatFocusStatus {
   FOCUSED = 0,
   DISTRACTED = 1,
   NOT_STARTED = 2,
+  GIVEUP = 3,
 }
 
 export enum FlightMode {

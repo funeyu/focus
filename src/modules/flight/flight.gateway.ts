@@ -134,18 +134,6 @@ export class FlightGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await this.broadcastSeatUpdate(data.flightId);
   }
 
-  @SubscribeMessage('pick.seat')
-  async onPickSeat(client: WebSocket, data: { flightId: string; userId: string; seatNum: string; focusScene: number }) {
-    console.log('[WS] pick.seat', data);
-    try {
-      await this.flightService.join(data.flightId, data.userId, data.seatNum, data.focusScene);
-      await this.broadcastSeatUpdate(data.flightId);
-      this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'ok');
-    } catch (err) {
-      this.broadcastToRoom(`flight:${data.flightId}`, 'pick.seat.res', 'error');
-    }
-  }
-
   @SubscribeMessage('leaveSeat')
   async onLeaveSeat(client: WebSocket, data: { flightId: string; userId: string }) {
     console.log('[WS] leaveSeat', data);

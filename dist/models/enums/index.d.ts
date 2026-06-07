@@ -7,7 +7,8 @@ export declare enum UserFlyStatus {
 export declare enum SeatFocusStatus {
     FOCUSED = 0,
     DISTRACTED = 1,
-    NOT_STARTED = 2
+    NOT_STARTED = 2,
+    GIVEUP = 3
 }
 export declare enum FlightMode {
     SINGLE = 0,

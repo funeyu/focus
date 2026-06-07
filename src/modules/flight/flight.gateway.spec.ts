@@ -46,7 +46,6 @@ function makeGateway() {
     setCachedFlightDto: jest.fn().mockResolvedValue(undefined),
     ensureCached: jest.fn().mockResolvedValue(null),
     updateSeatInCache: jest.fn().mockResolvedValue(undefined),
-    setActiveSeatInCache: jest.fn().mockResolvedValue(undefined),
     getActiveSeatCount: jest.fn().mockResolvedValue(0),
     cleanupFlightCache: jest.fn().mockResolvedValue(undefined),
   };
