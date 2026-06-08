@@ -6,6 +6,7 @@ import { RedisModule } from './common/redis.module';
 import { UserModule } from './modules/user/user.module';
 import { FlightModule } from './modules/flight/flight.module';
 import { TokenMiddleware } from './common/token.middleware';
+import { PushModule } from './modules/push/push.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { TokenMiddleware } from './common/token.middleware';
     RedisModule,
     UserModule,
     FlightModule,
+    PushModule,
   ],
 })
 export class AppModule {

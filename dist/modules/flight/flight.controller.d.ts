@@ -1,11 +1,15 @@
 import { FlightService } from './flight.service';
 import { FlightStatsService } from './flight-stats.service';
+import { PushService } from '../push/push.service';
+import { UserService } from '../user/user.service';
 import Redis from 'ioredis';
 export declare class FlightController {
     private readonly flightService;
     private readonly statsService;
+    private readonly pushService;
+    private readonly userService;
     private readonly redis;
-    constructor(flightService: FlightService, statsService: FlightStatsService, redis: Redis);
+    constructor(flightService: FlightService, statsService: FlightStatsService, pushService: PushService, userService: UserService, redis: Redis);
     create(body: {
         captainId: string;
         mode: number;

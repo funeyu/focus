@@ -8,11 +8,23 @@ export declare class UserController {
         name: string;
         avatar?: string;
         region?: string;
+        deviceToken?: string;
     }): Promise<{
         code: number;
         data: any;
     }>;
     getFriends(userId: string): Promise<{
+        code: number;
+        data: any;
+    }>;
+    getUser(userId: string): Promise<{
+        code: number;
+        data: any;
+    }>;
+    registerDeviceToken(body: {
+        userId: string;
+        token: string;
+    }): Promise<{
         code: number;
         data: any;
     }>;

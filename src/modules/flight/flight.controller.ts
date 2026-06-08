@@ -3,6 +3,8 @@ import { FlightService } from './flight.service';
 import { FlightStatsService } from './flight-stats.service';
 import { ApiUtil } from '../../common/api.util';
 import { REDIS_CLIENT } from '../../common/redis.module';
+import { PushService } from '../push/push.service';
+import { UserService } from '../user/user.service';
 import Redis from 'ioredis';
 
 @Controller('flight')
@@ -10,6 +12,8 @@ export class FlightController {
   constructor(
     private readonly flightService: FlightService,
     private readonly statsService: FlightStatsService,
+    private readonly pushService: PushService,
+    private readonly userService: UserService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) { }
 
@@ -28,6 +32,29 @@ export class FlightController {
   }) {
     const flight = await this.flightService.create(body);
     const dto = await this.flightService.toFlightDto(flight);
+    console.log('Created flight', body);
+    // Send push notifications to invited users
+    if (body.scheduledIds) {
+      const userIds = body.scheduledIds.split(',').map(s => s.trim()).filter(Boolean);
+      if (userIds.length > 0) {
+        const users = await this.userService.findByIds(userIds);
+        const captain = await this.userService.findById(body.captainId);
+        const captainName = captain?.name || 'Someone';
+        console.log('users', users);
+        for (const user of users) {
+          if (user.deviceToken) {
+            this.pushService.sendInviteNotification(
+              user.deviceToken,
+              captainName,
+              String(dto.from),
+              String(dto.to),
+              flight.id,
+            );
+          }
+        }
+      }
+    }
+
     return ApiUtil.ok(dto);
   }
 

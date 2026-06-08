@@ -34,6 +34,10 @@ __decorate([
     (0, typeorm_1.Column)({ type: 'varchar', length: 8, default: '' }),
     __metadata("design:type", String)
 ], User.prototype, "region", void 0);
+__decorate([
+    (0, typeorm_1.Column)({ type: 'varchar', length: 256, default: '' }),
+    __metadata("design:type", String)
+], User.prototype, "deviceToken", void 0);
 exports.User = User = __decorate([
     (0, typeorm_1.Entity)('user')
 ], User);

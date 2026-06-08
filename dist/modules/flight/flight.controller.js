@@ -18,16 +18,35 @@ const flight_service_1 = require("./flight.service");
 const flight_stats_service_1 = require("./flight-stats.service");
 const api_util_1 = require("../../common/api.util");
 const redis_module_1 = require("../../common/redis.module");
+const push_service_1 = require("../push/push.service");
+const user_service_1 = require("../user/user.service");
 const ioredis_1 = require("ioredis");
 let FlightController = class FlightController {
-    constructor(flightService, statsService, redis) {
+    constructor(flightService, statsService, pushService, userService, redis) {
         this.flightService = flightService;
         this.statsService = statsService;
+        this.pushService = pushService;
+        this.userService = userService;
         this.redis = redis;
     }
     async create(body) {
         const flight = await this.flightService.create(body);
         const dto = await this.flightService.toFlightDto(flight);
+        console.log('Created flight', body);
+        if (body.scheduledIds) {
+            const userIds = body.scheduledIds.split(',').map(s => s.trim()).filter(Boolean);
+            if (userIds.length > 0) {
+                const users = await this.userService.findByIds(userIds);
+                const captain = await this.userService.findById(body.captainId);
+                const captainName = captain?.name || 'Someone';
+                console.log('users', users);
+                for (const user of users) {
+                    if (user.deviceToken) {
+                        this.pushService.sendInviteNotification(user.deviceToken, captainName, String(dto.from), String(dto.to), flight.id);
+                    }
+                }
+            }
+        }
         return api_util_1.ApiUtil.ok(dto);
     }
     async join(flightId, userId, body) {
@@ -144,9 +163,11 @@ __decorate([
 ], FlightController.prototype, "flushRedis", null);
 exports.FlightController = FlightController = __decorate([
     (0, common_1.Controller)('flight'),
-    __param(2, (0, common_1.Inject)(redis_module_1.REDIS_CLIENT)),
+    __param(4, (0, common_1.Inject)(redis_module_1.REDIS_CLIENT)),
     __metadata("design:paramtypes", [flight_service_1.FlightService,
         flight_stats_service_1.FlightStatsService,
+        push_service_1.PushService,
+        user_service_1.UserService,
         ioredis_1.default])
 ], FlightController);
 //# sourceMappingURL=flight.controller.js.map

@@ -29,6 +29,7 @@ let UserService = class UserService {
             avatar: data.avatar || '',
             vip: false,
             region: data.region || '',
+            deviceToken: data.deviceToken || '',
         });
         return this.userRepo.save(user);
     }
@@ -39,6 +40,9 @@ let UserService = class UserService {
         if (ids.length === 0)
             return [];
         return this.userRepo.findByIds(ids);
+    }
+    async updateDeviceToken(userId, token) {
+        await this.userRepo.update({ id: userId }, { deviceToken: token });
     }
 };
 exports.UserService = UserService;

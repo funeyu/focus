@@ -11,7 +11,7 @@ export class UserController {
   ) {}
 
   @Post('create')
-  async create(@Body() body: { name: string; avatar?: string; region?: string }) {
+  async create(@Body() body: { name: string; avatar?: string; region?: string; deviceToken?: string }) {
     const user = await this.userService.create(body);
     return ApiUtil.ok(user);
   }
@@ -20,5 +20,17 @@ export class UserController {
   async getFriends(@Param('userId') userId: string) {
     const friendships = await this.friendshipService.getFriends(userId);
     return ApiUtil.ok(friendships);
+  }
+
+  @Get(':userId')
+  async getUser(@Param('userId') userId: string) {
+    const user = await this.userService.findById(userId);
+    return ApiUtil.ok(user);
+  }
+
+  @Post('device-token')
+  async registerDeviceToken(@Body() body: { userId: string; token: string }) {
+    await this.userService.updateDeviceToken(body.userId, body.token);
+    return ApiUtil.ok(null);
   }
 }

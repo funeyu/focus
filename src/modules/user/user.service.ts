@@ -18,6 +18,7 @@ export class UserService {
       avatar: data.avatar || '',
       vip: false,
       region: data.region || '',
+      deviceToken: data.deviceToken || '',
     });
     return this.userRepo.save(user);
   }
@@ -29,6 +30,10 @@ export class UserService {
   async findByIds(ids: string[]): Promise<User[]> {
     if (ids.length === 0) return [];
     return this.userRepo.findByIds(ids);
+  }
+
+  async updateDeviceToken(userId: string, token: string): Promise<void> {
+    await this.userRepo.update({ id: userId }, { deviceToken: token });
   }
 
 }

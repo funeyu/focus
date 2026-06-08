@@ -15,6 +15,7 @@ const redis_module_1 = require("./common/redis.module");
 const user_module_1 = require("./modules/user/user.module");
 const flight_module_1 = require("./modules/flight/flight.module");
 const token_middleware_1 = require("./common/token.middleware");
+const push_module_1 = require("./modules/push/push.module");
 let AppModule = class AppModule {
     configure(consumer) {
         consumer.apply(token_middleware_1.TokenMiddleware).forRoutes('*');
@@ -39,6 +40,7 @@ exports.AppModule = AppModule = __decorate([
             redis_module_1.RedisModule,
             user_module_1.UserModule,
             flight_module_1.FlightModule,
+            push_module_1.PushModule,
         ],
     })
 ], AppModule);

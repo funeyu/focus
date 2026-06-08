@@ -16,4 +16,7 @@ export class User {
 
   @Column({ type: 'varchar', length: 8, default: '' })
   region: string;
+
+  @Column({ type: 'varchar', length: 256, default: '' })
+  deviceToken: string;
 }
